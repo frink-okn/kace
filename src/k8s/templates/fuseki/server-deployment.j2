@@ -1,0 +1,57 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frink-{{ kg_name }}-fuseki-server
+  labels:
+    app: frink-{{ kg_name }}-fuseki-server
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: frink-{{ kg_name }}-fuseki-server
+  template:
+    metadata:
+      labels:
+        app: frink-{{ kg_name }}-fuseki-server
+    spec:
+      securityContext:
+        runAsUser: 1001
+        runAsGroup: 3000
+        fsGroup: 2000
+      containers:
+      - name: fuseki-server
+        image: rogargon/fuseki-hdt-docker:6f866704e22b1a41fb4c20829035d9e9c416a16a
+        ports:
+        - containerPort: 3030
+        env:
+        - name: 'JAVA_TOOL_OPTIONS'
+          value: '-Xmx1G'
+        resources:
+          requests:
+            cpu: '1'
+            memory: '2G'
+          limits:
+            memory: '2G'
+        volumeMounts:
+        - name: data
+          mountPath: "/opt/fuseki/{{ kg_name }}.hdt"
+          subPath: "{{ kg_name }}.hdt"
+          readOnly: true
+        - name: data
+          mountPath: "/opt/fuseki/{{ kg_name }}.hdt.index.v1-1"
+          subPath: "{{ kg_name }}.hdt.index.v1-1"
+          readOnly: true
+        - name: config
+          mountPath: "/opt/fuseki/config-hdt.ttl"
+          subPath: "config-hdt.ttl"
+          readOnly: true
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: {{ pvc_name }}
+      - name: config
+        configMap:
+          name: frink-{{ kg_name }}-fuseki-config
+          items:
+          - key: "config.ttl"
+            path: "config-hdt.ttl"

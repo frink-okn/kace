@@ -1,0 +1,6 @@
+image: containers.renci.org/frink/spider-client:v0.0.1
+command:
+  - python
+
+
+

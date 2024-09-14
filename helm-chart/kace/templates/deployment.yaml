@@ -1,0 +1,121 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "kace.fullname" . }}
+  labels:
+    {{- include "kace.labels" . | nindent 4 }}
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "kace.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "kace.selectorLabels" . | nindent 8 }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "kace.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: {{ .Chart.Name }}-web-server
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          env:
+            {{ include "kace.env_variables" . | nindent 12 }}
+            - name: K8S_NAMESPACE
+              value: {{ .Release.Namespace }}
+
+          command:
+            - 'gunicorn'
+            - 'server:app'
+            - '--bind'
+            - '0.0.0.0:9898'
+            - '-k'
+            - 'uvicorn.workers.UvicornWorker'
+          ports:
+            - name: http
+              containerPort: 9898
+              protocol: TCP
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - mountPath: {{ .Values.app_config.local_data_dir }}
+              name: local
+            {{ if .Values.app_config.shared_pvc_name }}
+            - mountPath: {{ .Values.app_config.shared_data_dir }}
+              name: shared
+            {{ end }}
+        - name: {{ .Chart.Name}}-celery-worker
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command:
+            - 'celery'
+            - '-A'
+            - 'celery_tasks'
+            - 'worker'
+            - '--loglevel=INFO'
+            - '--concurrency'
+            - '2'
+          env:
+            {{ include "kace.env_variables" . | nindent 12 }}
+            - name: K8S_NAMESPACE
+              value: {{ .Release.Namespace }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - mountPath: {{ .Values.app_config.local_data_dir }}
+              name: local
+            {{ if .Values.app_config.shared_pvc_name }}
+            - mountPath: {{ .Values.app_config.shared_data_dir }}
+              name: shared
+            {{ end }}
+        - name: {{ .Chart.Name}}-redis
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          image: "{{ .Values.redis.image.repository }}:{{ .Values.redis.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          env:
+            - name: ALLOW_EMPTY_PASSWORD
+              value: "yes"
+          ports:
+            - name: http
+              containerPort: 6379
+              protocol: TCP
+          resources:
+            {{- toYaml .Values.redis.resources | nindent 12 }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      volumes:
+        - name: local
+          persistentVolumeClaim:
+            claimName: {{ .Values.app_config.local_pvc_name }}
+        {{ if .Values.app_config.shared_pvc_name }}
+        - name: shared
+          persistentVolumeClaim:
+            claimName: {{ .Values.app_config.shared_pvc_name }}
+        {{ end }}

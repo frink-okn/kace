@@ -1,0 +1,6 @@
+image: containers.renci.org/frink/qendpoint:v1.16.1
+command:
+  - /bin/convert-all.sh
+
+
+

@@ -1,0 +1,17 @@
+pyhelm3
+#git+https://github.com/stackhpc/pyhelm3.git
+pydantic==2.6.0
+fastapi
+uvicorn[all]
+aiofile
+aioboto3
+celery
+kubernetes
+redis
+gunicorn
+semver
+lakefs==0.7.0
+lakefs-sdk==1.28.2
+jinja2
+
+

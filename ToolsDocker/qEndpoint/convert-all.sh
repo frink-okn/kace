@@ -13,10 +13,12 @@ fi
 export RIOT_TMP_DIR=$WORKING_DIR/riot-tmp/
 export HDT_TMP_DIR=$WORKING_DIR/hdt-tmp/
 export HDT_FINAL_DIR=$WORKING_DIR/hdt/
+export REPORT_DIR=$WORKING_DIR/report
 
 rm -rf $RIOT_TMP_DIR/*
 rm -rf $HDT_TMP_DIR/*
 rm -rf $HDT_FINAL_DIR/*
+rm -rf $REPORT_DIR/*
 
 mkdir -p ${RIOT_TMP_DIR}
 FILES=()
@@ -25,14 +27,20 @@ for file in "$@"; do
     FILES+=("$file_full_path")
 done
 
+echo "combining "
 riot --debug  --nocheck -v --output TURTLE ${FILES[@]} > ${RIOT_TMP_DIR}/combined.ttl
 
-python3 /bin/process_graph.py ${RIOT_TMP_DIR}/
+echo "validating... \n\n\n\n"
+mkdir -p $REPORT_DIR
+
+riot --validate --check ${RIOT_TMP_DIR}/combined.ttl
+
+#python3 /bin/process_graph.py ${RIOT_TMP_DIR}/ $REPORT_DIR
 
 mkdir -p ${HDT_TMP_DIR}
 mkdir -p ${HDT_FINAL_DIR}
 
-rdf2hdt.sh -index -quiet ${RIOT_TMP_DIR}/combined.ttl ${HDT_FINAL_DIR}/graph.hdt
+#rdf2hdt.sh -index -quiet ${RIOT_TMP_DIR}/combined.ttl ${HDT_FINAL_DIR}/graph.hdt
 
 rm -rf ${RIOT_TMP_DIR}
 rm -rf ${HDT_TMP_DIR}

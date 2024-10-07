@@ -43,16 +43,17 @@ async def convert_to_hdt(action_model: LakefsMergeActionModel, background_tasks:
 @app.post("/handle_tag_creation")
 async def handle_tag_creation(background_tasks: BackgroundTasks,
                               kg_name: str = Query(None),
-                              cpu: int = Query(None),
+                              cpu: str = Query(None),
                               memory: str = Query(None),
+                              hdt_path: str = Query('/hdt/'),
                               action_model: LakefTagCreationModel=Body(...)
                               ):
-    background_tasks.add_task(create_deployment_task, kg_name, cpu, memory, action_model)
+    background_tasks.add_task(create_deployment_task, kg_name, cpu, memory, hdt_path, action_model)
     return f"Started deployment, anticipated address https://frink.apps.renci.org/{kg_name}/sparql"
 
 
-async def create_deployment_task(kg_name: str, cpu: int, memory: str, action_model: LakefTagCreationModel):
-    await download_hdt_files(repo=action_model.repository_id, branch=action_model.tag_id, kg_name=kg_name)
+async def create_deployment_task(kg_name: str, cpu: str, memory: str, hdt_path: str, action_model: LakefTagCreationModel):
+    await download_hdt_files(repo=action_model.repository_id, branch=action_model.tag_id, kg_name=kg_name, hdt_path=hdt_path)
     create_deployment.delay(kg_name=kg_name, cpu=cpu, memory=memory, lakefs_action=action_model.dict())
 
 if __name__ == "__main__":

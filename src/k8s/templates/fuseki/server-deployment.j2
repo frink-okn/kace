@@ -35,11 +35,11 @@ spec:
         volumeMounts:
         - name: data
           mountPath: "/opt/fuseki/{{ kg_name }}.hdt"
-          subPath: "{{ kg_name }}.hdt"
+          subPath: "deploy/{{ kg_name }}.hdt"
           readOnly: true
         - name: data
           mountPath: "/opt/fuseki/{{ kg_name }}.hdt.index.v1-1"
-          subPath: "{{ kg_name }}.hdt.index.v1-1"
+          subPath: "deploy/{{ kg_name }}.hdt.index.v1-1"
           readOnly: true
         - name: config
           mountPath: "/opt/fuseki/config-hdt.ttl"

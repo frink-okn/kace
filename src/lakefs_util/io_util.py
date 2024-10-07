@@ -60,8 +60,9 @@ async def download_files(repo: str, branch: str):
     return rdf_files
 
 
-async def download_hdt_files(repo: str, branch: str, kg_name: str):
-    base_dir = config.shared_data_dir
+async def download_hdt_files(repo: str, branch: str, kg_name: str, hdt_path: str='/hdt/') -> None:
+    base_dir = config.shared_data_dir + '/deploy'
+    # @TODO download into a temp name then rename
     os.makedirs(base_dir, exist_ok=True)
     endpoint_url = config.lakefs_url
     access_key = config.lakefs_access_key
@@ -75,15 +76,24 @@ async def download_hdt_files(repo: str, branch: str, kg_name: str):
             aws_secret_access_key=secret_key
     ) as s3_client:
         bucket = await s3_client.Bucket(repo)
-        async for obj in bucket.objects.filter(Prefix=branch + '/hdt/'):
-            logger.info(f"Downloading {obj.key}")
-            download_path = os.path.join(base_dir, obj.key.split('/')[-1].replace('graph', kg_name))
+        renames = {}
+        async for obj in bucket.objects.filter(Prefix=branch + hdt_path):
+            if obj.key.endswith('.hdt') or obj.key.endswith('.hdt.index.v1-1'):
+                logger.info(f"Downloading {obj.key}")
+                temp_file_name = branch + '-' + kg_name + "." + ".".join(obj.key.split('/')[-1].split('.')[1:])
+                download_path = os.path.join(base_dir, temp_file_name)
+                final_file_path = os.path.join(base_dir, kg_name + "." + ".".join(obj.key.split('/')[-1].split('.')[1:]))
+                renames[download_path] = final_file_path
             os.makedirs(os.path.dirname(download_path), exist_ok=True)
             stream_body = (await obj.get())['Body']
             async with async_open(download_path, 'wb') as out_file:
                 while file_data := await stream_body.read():
                    await out_file.write(file_data)
             logger.info(f"Downloaded {obj.key} to {download_path}")
+        logger.info("Moving files")
+        for temp_file_name, file_name in renames.items():
+            os.rename(temp_file_name, file_name)
+            logger.info(f"Moved {temp_file_name} -> {file_name}")
 
 
 async def upload_hdt_files(repo: str, root_branch: str = "main", local_files: list[str] = None, remote_path=""):

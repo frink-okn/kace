@@ -4,11 +4,9 @@ metadata:
   annotations:
     cert-manager.io/cluster-issuer: letsencrypt
     nginx.ingress.kubernetes.io/enable-cors: "true"
-    nginx.ingress.kubernetes.io/rewrite-target: /{{ kg_name }}/$1
+    nginx.ingress.kubernetes.io/rewrite-target: /ldf/$1
     nginx.ingress.kubernetes.io/whitelist-source-range: "0.0.0.0/0,::/0"
-    nginx.ingress.kubernetes.io/proxy-read-timeout: "600"
-    nginx.ingress.kubernetes.io/proxy-send-timeout: "600"
-  name: frink-{{ kg_name }}-fuseki-ingress
+  name: frink-ldf-ingress
 spec:
   tls:
   - hosts:
@@ -19,9 +17,9 @@ spec:
     http:
       paths:
       - pathType: Prefix
-        path: "/{{ kg_name }}/(.*)"
+        path: "/ldf/(.*)"
         backend:
           service:
-            name: frink-{{ kg_name }}-fuseki-service
+            name: frink-ldf-service
             port:
               number: 80

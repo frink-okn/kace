@@ -2,7 +2,7 @@ import uvicorn
 from fastapi import FastAPI, BackgroundTasks, Query, Body
 from models.lakefs_models import LakefsMergeActionModel, LakefTagCreationModel
 from celery_tasks.celery import create_hdt_conversion_job, create_deployment
-from lakefs_util.io_util import download_files, upload_hdt_files, download_hdt_files
+from lakefs_util.io_util import download_files, upload_files, download_hdt_files
 from config import config
 
 
@@ -13,15 +13,18 @@ app = FastAPI(title="KACE Server", description="Kubernetes artifacts Creation En
 @app.post('/upload_hdt_callback')
 async def upload_hdt_callback(action_model: LakefsMergeActionModel):
     hdt_location = config.local_data_dir + '/' + action_model.repository_id + '/' + action_model.branch_id + '/hdt'
+    report_location = config.local_data_dir + '/' + action_model.repository_id + '/' + action_model.branch_id + '/report'
     try:
-        await upload_hdt_files(
+        await upload_files(
             repo=action_model.repository_id,
             root_branch=action_model.branch_id,
             local_files=[
-                f'{hdt_location}/graph.hdt',
-                f'{hdt_location}/graph.hdt.index.v1-1'
-            ],
-            remote_path="hdt"
+                (f'{hdt_location}/graph.hdt', 'hdt'),
+                (f'{hdt_location}/graph.hdt.index.v1-1', 'hdt'),
+                # (f'{report_location}/graph_stats.json', 'report'),
+                # (f'{report_location}/riot_validate.log', 'report'),
+                # (f'{report_location}/schema.dot', 'report')
+            ]
         )
         # @TODO add slack notification here (?)
 

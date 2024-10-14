@@ -96,13 +96,13 @@ async def download_hdt_files(repo: str, branch: str, kg_name: str, hdt_path: str
             logger.info(f"Moved {temp_file_name} -> {file_name}")
 
 
-async def upload_hdt_files(repo: str, root_branch: str = "main", local_files: list[str] = None, remote_path=""):
+async def upload_files(repo: str, root_branch: str = "main", local_files: list[tuple[str, str]] = None):
     """Upload the result and clear dir"""
+    # create client
     client = lakefs.client.LakeFSClient(configuration=lakefs_sdk.configuration.Configuration(
         config.lakefs_url,username=config.lakefs_access_key, password=config.lakefs_secret_key
     ))
-    max = 0
-    latest_tag = ""
+    # get all tags
     results = client.tags_api.list_tags(repo)
     pagination = results.pagination
     tags = results.results
@@ -110,10 +110,11 @@ async def upload_hdt_files(repo: str, root_branch: str = "main", local_files: li
         results = client.tags_api.list_tags(repo,after=pagination.next_offset)
         pagination = results.pagination
         tags += results
-
+    # compute latest tag
     versions = [tag.id.lstrip('v') for tag in tags]
     latest_tag =  "v" + bump_version(get_latest_version(versions), "patch") if len(versions) else "v0.0.1"
     stable_branch_name = f"stable_{latest_tag.replace('.', '_')}"
+    # create branch if not exists
     try:
         client.branches_api.create_branch(repository=repo, branch_creation={
             "name": stable_branch_name,
@@ -122,7 +123,8 @@ async def upload_hdt_files(repo: str, root_branch: str = "main", local_files: li
     except Exception as e:
         logger.error(e)
         pass
-    for file in local_files:
+    # push local files.
+    for file, remote_path in local_files:
         with open(file, "rb") as stream:
             file_content = stream.read()
             content = bytearray(file_content)
@@ -145,7 +147,6 @@ async def upload_hdt_files(repo: str, root_branch: str = "main", local_files: li
         "id": latest_tag,
         "ref": stable_branch_name
     })
-
 
 
 def clean_up_files(repo: str):

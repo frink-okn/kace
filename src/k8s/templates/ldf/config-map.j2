@@ -1,0 +1,168 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: frink-ldf-config
+data:
+  config.json: |
+    {
+      "@context": "https://linkedsoftwaredependencies.org/bundles/npm/@ldf/server/^3.0.0/components/context.jsonld",
+      "@id": "urn:ldf-server:my",
+      "import": "preset-qpf:config-defaults.json",
+      "title": "FRINK Linked Data Fragments server",
+      "protocol": "http",
+      "baseURL": "https://{{ host_name }}/ldf",
+      "router": [
+          {
+            "@id": "preset-qpf:sets/routers.json#myPageRouter",
+            "pageSize": 100
+          }
+        ],
+      "datasources": [
+        {
+              "@id": "urn:ldf-server:wikidataDatasource",
+              "@type": "HdtDatasource",
+              "datasourceTitle": "Wikidata",
+              "description": "Wikidata Triple Pattern Fragments endpoint",
+              "datasourcePath": "wikidata",
+              "hdtFile": "/data/deploy/wikidata-all.hdt"
+
+        },
+        {
+              "@id": "urn:ldf-server:ubergraphDatasource",
+              "@type": "HdtDatasource",
+              "datasourceTitle": "Ubergraph",
+              "description": "Ubergraph Triple Pattern Fragments endpoint",
+              "datasourcePath": "ubergraph",
+              "hdtFile": "/data/deploy/ubergraph.hdt"
+        },
+        {
+              "@id": "urn:ldf-server:dreamkgDatasource",
+              "@type": "HdtDatasource",
+              "datasourceTitle": "DREAM-KG",
+              "description": "DREAM-KG Triple Pattern Fragments endpoint",
+              "datasourcePath": "dreamkg",
+              "hdtFile": "/data/deploy/dreamkg.hdt"
+        },
+        {
+              "@id": "urn:ldf-server:ufoknDatasource",
+              "@type": "HdtDatasource",
+              "datasourceTitle": "UFOKN",
+              "description": "Urban Flooding Open Knowledge Network (UF-OKN) Triple Pattern Fragments endpoint",
+              "datasourcePath": "ufokn",
+              "hdtFile": "/data/deploy/ufokn.hdt"
+
+        },
+        {
+              "@id": "urn:ldf-server:semopenalexDatasource",
+              "@type": "HdtDatasource",
+              "datasourceTitle": "SemOpenAlex",
+              "description": "SemOpenAlex Triple Pattern Fragments endpoint",
+              "datasourcePath": "semopenalex",
+              "hdtFile": "/data/deploy/semopenalex.hdt"
+        },
+        {
+              "@id": "urn:ldf-server:scalesDatasource",
+              "@type": "HdtDatasource",
+              "datasourceTitle": "SCALES",
+              "description": "SCALES Triple Pattern Fragments endpoint",
+              "datasourcePath": "scales",
+              "hdtFile": "/data/deploy/scales.hdt"
+        },
+        {
+              "@id": "urn:ldf-server:sockgDatasource",
+              "@type": "HdtDatasource",
+              "datasourceTitle": "SOCKG",
+              "description": "Soil Organic Carbon Knowledge Graph (SOCKG) Triple Pattern Fragments endpoint",
+              "datasourcePath": "sockg",
+              "hdtFile": "/data/deploy/sockg.hdt"
+        },
+        {
+              "@id": "urn:ldf-server:sudoknDatasource",
+              "@type": "HdtDatasource",
+              "datasourceTitle": "SUDOKN",
+              "description": "Supply and Demand Open Knowledge Network (SUDOKN) Triple Pattern Fragments endpoint",
+              "datasourcePath": "sudokn",
+              "hdtFile": "/data/deploy/sudokn.hdt"
+        },
+        {
+              "@id": "urn:ldf-server:climatepub4kgDatasource",
+              "@type": "HdtDatasource",
+              "datasourceTitle": "climatepub4-kg",
+              "description": "climatepub4-kg Triple Pattern Fragments endpoint",
+              "datasourcePath": "climatepub4kg",
+              "hdtFile": "/data/deploy/climatepub4kg.hdt"
+        },
+        {
+              "@id": "urn:ldf-server:securechainkgDatasource",
+              "@type": "HdtDatasource",
+              "datasourceTitle": "Secure Chain KG",
+              "description": "Secure Chain KG Triple Pattern Fragments endpoint",
+              "datasourcePath": "securechainkg",
+              "hdtFile": "/data/deploy/securechainkg.hdt"
+        },
+        {
+              "@id": "urn:ldf-server:biobricksiceDatasource",
+              "@type": "HdtDatasource",
+              "datasourceTitle": "BioBricks ICE KG",
+              "description": "BioBricks ICE KG Triple Pattern Fragments endpoint",
+              "datasourcePath": "biobricks-ice",
+              "hdtFile": "/data/deploy/biobricks-ice.hdt"
+        },
+        {
+              "@id": "urn:ldf-server:ruralkgDatasource",
+              "@type": "HdtDatasource",
+              "datasourceTitle": "RURAL-KG",
+              "description": "RURAL-KG Triple Pattern Fragments endpoint",
+              "datasourcePath": "ruralkg",
+              "hdtFile": "/data/deploy/ruralkg.hdt"
+        },
+        {
+              "@id": "urn:ldf-server:sawgraphDatasource",
+              "@type": "HdtDatasource",
+              "datasourceTitle": "SAWGraph",
+              "description": "SAWGraph Triple Pattern Fragments endpoint",
+              "datasourcePath": "sawgraph",
+              "hdtFile": "/data/deploy/sawgraph.hdt"
+        },
+        {
+              "@id": "urn:ldf-server:spokeDatasource",
+              "@type": "HdtDatasource",
+              "datasourceTitle": "SPOKE",
+              "description": "SPOKE Triple Pattern Fragments endpoint",
+              "datasourcePath": "spoke",
+              "hdtFile": "/data/deploy/spoke.hdt"
+        },
+        {
+          "@id": "urn:ldf-server:wildlifeDatasource",
+          "@type": "HdtDatasource",
+          "datasourceTitle": "Wildlife KG",
+          "description": "Wildlife KG Triple Pattern Fragments endpoint",
+          "datasourcePath": "wildlifekg",
+          "hdtFile": "/data/deploy/wildlifekg.hdt"
+        },
+        {
+          "@id": "urn:ldf-server:hydrologykgDatasource",
+          "@type": "HdtDatasource",
+          "datasourceTitle": "hydrologykg",
+          "description": "Hydrology KG Triple Pattern Fragments endpoint",
+          "datasourcePath": "hydrologykg",
+          "hdtFile": "/data/deploy/hydrologykg.hdt"
+        },
+        {
+          "@id": "urn:ldf-server:spatialkgDatasource",
+          "@type": "HdtDatasource",
+          "datasourceTitle": "spatialkg",
+          "description": "Spatial KG Triple Pattern Fragments endpoint",
+          "datasourcePath": "spatialkg",
+          "hdtFile": "/data/deploy/spatialkg.hdt"
+        },
+        {
+          "@id": "urn:ldf-server:fiokgDatasource",
+          "@type": "HdtDatasource",
+          "datasourceTitle": "fiokg",
+          "description": "FIO KG Triple Pattern Fragments endpoint",
+          "datasourcePath": "fiokg",
+          "hdtFile": "/data/deploy/fiokg.hdt"
+        }
+      ]
+    }

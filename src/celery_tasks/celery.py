@@ -1,6 +1,6 @@
 from celery import Celery
 from k8s.podman import JobMan
-from k8s.fuseki_man import create_k8s_objects
+from k8s.server_man import fuseki_server_manager, federation_server_manager, ldf_server_manager
 from models.lakefs_models import LakefsMergeActionModel, LakefTagCreationModel
 from lakefs_util.io_util import resolve_commit
 from log_util import LoggingUtil
@@ -50,8 +50,9 @@ def create_hdt_conversion_job(action_payload, files_list):
     logger.info(f'Job {job_name} finished.')
     requests.post(config.hdt_upload_callback_url, json=action_payload)
 
+
 @app.task(ignore_result=True)
-def create_deployment(kg_name: str, cpu: int, memory: str, lakefs_action):
+def create_deployment(kg_name: str, cpu: str, memory: str, lakefs_action):
     lakefs_action : LakefTagCreationModel = LakefTagCreationModel(**lakefs_action)
     # this will be given to the pod. So if version changes pod is restarted :)
     annotations = {
@@ -60,15 +61,42 @@ def create_deployment(kg_name: str, cpu: int, memory: str, lakefs_action):
         "lakefs-repository": lakefs_action.repository_id,
         "commit": lakefs_action.commit_id
     }
-    create_k8s_objects(kg_name=kg_name,
-                       namespace=config.k8s_namespace,
-                       cpu=cpu,
-                       memory=memory,
-                       pvc_name=config.shared_pvc_name,
-                       annotations=annotations)
+    resources = {
+            "limits": {
+                "memory": memory,
+            }
+        }
+    if cpu:
+        resources["limits"]["cpu"] = cpu
+    # Create fuseki server
+    fuseki_server_manager.create_all(
+        parameters={
+            "kg_name": kg_name
+        },
+        annotations=annotations,
+        resources=resources
+    )
     # @TODO probably worth doing some tests here, something like liveliness check
-
     logger.info(f'{kg_name} deployment created.')
+    # @TODO annotations might need to be changed
+    ldf_server_manager.create_all(
+        parameters={
+            "kg_name": kg_name,
+            "host_name": config.frink_address,
+        },
+        annotations=annotations,
+        # Use default resources in the template
+        resources=None
+    )
+    logger.info(f'updated ldf server deployment')
+    # Create federation server
+    # @TODO annotations might need to change
+    federation_server_manager.create_all(parameters={},
+                                         annotations=annotations,
+                                         # Use default resources in the template
+                                         resources=None
+    )
+    logger.info(f'updated federation server deployment')
 
     job = JobMan()
     logger.info(f"creating spider client job")

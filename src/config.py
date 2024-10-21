@@ -16,6 +16,7 @@ class Config(BaseModel):
     slack_webhook_url: str
     spider_ip: str
     spider_port: int
+    frink_address: str
 
 
 config = Config(
@@ -30,6 +31,7 @@ config = Config(
     hdt_upload_callback_url=os.environ.get('HDT_UPLOAD_CALLBACK_URL', 'http://localhost:9898/upload_hdt_callback'),
     slack_webhook_url=os.environ.get('SLACK_URL', ''),
     spider_ip=os.environ.get('SPIDER_IP', ''),
-    spider_port=int(os.environ.get('SPIDER_PORT', ''))
+    spider_port=int(os.environ.get('SPIDER_PORT', '')),
+    frink_address=os.environ.get('FRINK_ADDRESS', 'frink.apps.renci.org')
 
 )

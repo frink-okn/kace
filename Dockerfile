@@ -26,6 +26,7 @@ WORKDIR /apps
 COPY requirements.txt requirements.txt
 RUN python -m pip install -r requirements.txt
 COPY ./src  ./src
-USER nru
+# @TODO figure out file access
+USER root
 WORKDIR ./src
 ENV PYTHONPATH=/apps/src

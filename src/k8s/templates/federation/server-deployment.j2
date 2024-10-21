@@ -1,0 +1,62 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frink-union-comunica-server
+  labels:
+    app: frink-union-comunica-server
+spec:
+  replicas: 1
+  strategy:
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      app: frink-union-comunica-server
+  template:
+    metadata:
+      labels:
+        app: frink-union-comunica-server
+    spec:
+      securityContext:
+        runAsUser: 1001
+        runAsGroup: 3000
+        fsGroup: 2000
+      containers:
+      - name: comunica-server
+        image: containers.renci.org/frink/comunica-query-sparql-hdt-http:v3.0.3
+        ports:
+        - containerPort: 3030
+        env:
+        - name: 'NODE_OPTIONS'
+          value: '--max_old_space_size=65536'
+        args:
+        - "-p"
+        - "3030"
+        - "-w"
+        - "8"
+        - "-t"
+        - "120"
+        - "-c"
+        - "/config/config.json"
+        resources:
+          requests:
+            cpu: '6'
+            memory: '200G'
+          limits:
+            memory: '200G'
+        volumeMounts:
+        - name: data
+          mountPath: "/data"
+          readOnly: true
+        - name: config
+          mountPath: "/config"
+          readOnly: true
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: {{ pvc_name }}
+      - name: config
+        configMap:
+          name: frink-union-comunica-config
+          items:
+          - key: "config.json"
+            path: "config.json"

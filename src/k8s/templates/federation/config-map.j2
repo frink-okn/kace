@@ -1,0 +1,82 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: frink-union-comunica-config
+data:
+  config.json: |
+    {
+      "sources": [
+        {
+          "type": "hdt",
+          "value": "/data/deploy/ubergraph.hdt"
+        },
+        {
+          "type": "hdt",
+          "value": "/data/deploy/wikidata-all.hdt"
+        },
+        {
+          "type": "hdt",
+          "value": "/data/deploy/scales.hdt"
+        },
+        {
+          "type": "hdt",
+          "value": "/data/deploy/ufokn.hdt"
+        },
+        {
+          "type": "hdt",
+          "value": "/data/deploy/sudokn.hdt"
+        },
+        {
+          "type": "hdt",
+          "value": "/data/deploy/sockg.hdt"
+        },
+        {
+          "type": "hdt",
+          "value": "/data/deploy/semopenalex.hdt"
+        },
+        {
+          "type": "hdt",
+          "value": "/data/deploy/climatepub4kg.hdt"
+        },
+        {
+          "type": "hdt",
+          "value": "/data/deploy/securechainkg.hdt"
+        },
+        {
+          "type": "hdt",
+          "value": "/data/deploy/dreamkg.hdt"
+        },
+        {
+          "type": "hdt",
+          "value": "/data/deploy/biobricks-ice.hdt"
+        },
+        {
+          "type": "hdt",
+          "value": "/data/deploy/ruralkg.hdt"
+        },
+        {
+          "type": "hdt",
+          "value": "/data/deploy/sawgraph.hdt"
+        },
+        {
+          "type": "hdt",
+          "value": "/data/deploy/spoke.hdt"
+        },
+        {
+          "type": "hdt",
+          "value": "/data/deploy/wildlifekg.hdt"
+        },
+        {
+          "type": "hdt",
+          "value": "/data/deploy/hydrologykg.hdt"
+        },
+        {
+          "type": "hdt",
+          "value": "/data/deploy/spatialkg.hdt"
+        },
+        {
+          "type": "hdt",
+          "value": "/data/deploy/fiokg.hdt"
+        }
+      ]
+    }

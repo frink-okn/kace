@@ -60,8 +60,9 @@ async def download_files(repo: str, branch: str):
     return rdf_files
 
 
-async def download_hdt_files(repo: str, branch: str, kg_name: str):
-    base_dir = config.shared_data_dir
+async def download_hdt_files(repo: str, branch: str, kg_name: str, hdt_path: str='/hdt/') -> None:
+    base_dir = config.shared_data_dir + '/deploy'
+    # @TODO download into a temp name then rename
     os.makedirs(base_dir, exist_ok=True)
     endpoint_url = config.lakefs_url
     access_key = config.lakefs_access_key
@@ -75,24 +76,33 @@ async def download_hdt_files(repo: str, branch: str, kg_name: str):
             aws_secret_access_key=secret_key
     ) as s3_client:
         bucket = await s3_client.Bucket(repo)
-        async for obj in bucket.objects.filter(Prefix=branch + '/hdt/'):
-            logger.info(f"Downloading {obj.key}")
-            download_path = os.path.join(base_dir, obj.key.split('/')[-1].replace('graph', kg_name))
+        renames = {}
+        async for obj in bucket.objects.filter(Prefix=branch + hdt_path):
+            if obj.key.endswith('.hdt') or obj.key.endswith('.hdt.index.v1-1'):
+                logger.info(f"Downloading {obj.key}")
+                temp_file_name = branch + '-' + kg_name + "." + ".".join(obj.key.split('/')[-1].split('.')[1:])
+                download_path = os.path.join(base_dir, temp_file_name)
+                final_file_path = os.path.join(base_dir, kg_name + "." + ".".join(obj.key.split('/')[-1].split('.')[1:]))
+                renames[download_path] = final_file_path
             os.makedirs(os.path.dirname(download_path), exist_ok=True)
             stream_body = (await obj.get())['Body']
             async with async_open(download_path, 'wb') as out_file:
                 while file_data := await stream_body.read():
                    await out_file.write(file_data)
             logger.info(f"Downloaded {obj.key} to {download_path}")
+        logger.info("Moving files")
+        for temp_file_name, file_name in renames.items():
+            os.rename(temp_file_name, file_name)
+            logger.info(f"Moved {temp_file_name} -> {file_name}")
 
 
-async def upload_hdt_files(repo: str, root_branch: str = "main", local_files: list[str] = None, remote_path=""):
+async def upload_files(repo: str, root_branch: str = "main", local_files: list[tuple[str, str]] = None):
     """Upload the result and clear dir"""
+    # create client
     client = lakefs.client.LakeFSClient(configuration=lakefs_sdk.configuration.Configuration(
         config.lakefs_url,username=config.lakefs_access_key, password=config.lakefs_secret_key
     ))
-    max = 0
-    latest_tag = ""
+    # get all tags
     results = client.tags_api.list_tags(repo)
     pagination = results.pagination
     tags = results.results
@@ -100,10 +110,11 @@ async def upload_hdt_files(repo: str, root_branch: str = "main", local_files: li
         results = client.tags_api.list_tags(repo,after=pagination.next_offset)
         pagination = results.pagination
         tags += results
-
+    # compute latest tag
     versions = [tag.id.lstrip('v') for tag in tags]
     latest_tag =  "v" + bump_version(get_latest_version(versions), "patch") if len(versions) else "v0.0.1"
     stable_branch_name = f"stable_{latest_tag.replace('.', '_')}"
+    # create branch if not exists
     try:
         client.branches_api.create_branch(repository=repo, branch_creation={
             "name": stable_branch_name,
@@ -112,7 +123,8 @@ async def upload_hdt_files(repo: str, root_branch: str = "main", local_files: li
     except Exception as e:
         logger.error(e)
         pass
-    for file in local_files:
+    # push local files.
+    for file, remote_path in local_files:
         with open(file, "rb") as stream:
             file_content = stream.read()
             content = bytearray(file_content)
@@ -135,7 +147,6 @@ async def upload_hdt_files(repo: str, root_branch: str = "main", local_files: li
         "id": latest_tag,
         "ref": stable_branch_name
     })
-
 
 
 def clean_up_files(repo: str):

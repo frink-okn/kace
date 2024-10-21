@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: frink-ldf-service
+spec:
+  selector:
+    app: frink-ldf-server
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 3000

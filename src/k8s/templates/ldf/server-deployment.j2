@@ -1,0 +1,54 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frink-ldf-server
+  labels:
+    app: frink-ldf-server
+spec:
+  replicas: 1
+  strategy:
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      app: frink-ldf-server
+  template:
+    metadata:
+      labels:
+        app: frink-ldf-server
+    spec:
+      securityContext:
+        runAsUser: 1001
+        runAsGroup: 3000
+        fsGroup: 2000
+      containers:
+      - name: ldf-server
+        image: containers.renci.org/frink/ldf-server:2023-09-13
+        ports:
+        - containerPort: 3000
+        args:
+        - "/srv/conf/config.json"
+        - "3000"
+        - "4"
+        resources:
+          requests:
+            cpu: '4'
+            memory: '63G'
+          limits:
+            cpu: '4'
+            memory: '63G'
+        volumeMounts:
+        - name: data
+          mountPath: "/data"
+        - name: config
+          mountPath: "/srv/conf"
+          readOnly: true
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: {{ pvc_name }}
+      - name: config
+        configMap:
+          name: frink-ldf-config
+          items:
+          - key: "config.json"
+            path: "config.json"

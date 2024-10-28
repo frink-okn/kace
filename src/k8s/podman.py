@@ -11,7 +11,8 @@ logger = LoggingUtil.init_logging(__name__)
 
 mapping = {
     "hdt-job": os.path.dirname(os.path.realpath(__file__)) + os.path.join(os.path.sep + "templates", "hdt-conversion.yaml"),
-    "spider-job": os.path.dirname(os.path.realpath(__file__)) + os.path.join(os.path.sep + "templates", "spider-client.yaml")
+    "spider-job": os.path.dirname(os.path.realpath(__file__)) + os.path.join(os.path.sep + "templates", "spider-client.yaml"),
+    "noe4j-rdf-job": os.path.dirname(os.path.realpath(__file__)) + os.path.join(os.path.sep + "templates", "neo4j-rdf-job.yaml")
     ## add other pods here
 }
 

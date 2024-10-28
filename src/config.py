@@ -13,6 +13,7 @@ class Config(BaseModel):
     shared_pvc_name: str
     local_pvc_name: str
     hdt_upload_callback_url: str
+    neo4j_upload_callback_url: str
     slack_webhook_url: str
     spider_ip: str
     spider_port: int
@@ -29,9 +30,10 @@ config = Config(
     shared_pvc_name=os.environ.get('SHARED_PVC_NAME', ''),
     local_pvc_name=os.environ.get('LOCAL_PVC_NAME', ''),
     hdt_upload_callback_url=os.environ.get('HDT_UPLOAD_CALLBACK_URL', 'http://localhost:9898/upload_hdt_callback'),
+    neo4j_upload_callback_url=os.environ.get('NEO4J_UPLOAD_CALLBACK_URL', 'http://localhost:9898/upload_neo4j_files'),
     slack_webhook_url=os.environ.get('SLACK_URL', ''),
     spider_ip=os.environ.get('SPIDER_IP', ''),
-    spider_port=int(os.environ.get('SPIDER_PORT', '')),
+    spider_port=int(os.environ.get('SPIDER_PORT', 9090)),
     frink_address=os.environ.get('FRINK_ADDRESS', 'frink.apps.renci.org')
 
 )

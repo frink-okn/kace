@@ -28,7 +28,7 @@ def create_hdt_conversion_job(action_payload, files_list):
     lakefs_payload = LakefsMergeActionModel(**action_payload)
     job = JobMan()
     logger.info(lakefs_payload)
-    job_name = f'{lakefs_payload.hook_id}-{lakefs_payload.repository_id}-{lakefs_payload.branch_id}-{lakefs_payload.commit_id[:10]}'
+    job_name = f'{lakefs_payload.hook_id}-{lakefs_payload.repository_id[:10]}-{lakefs_payload.branch_id}-{lakefs_payload.commit_id[:10]}'
 
     logger.info(f'Job name: {job_name}')
     # report the job id back ...
@@ -49,6 +49,34 @@ def create_hdt_conversion_job(action_payload, files_list):
     job.watch_pod(job_name=job_name)
     logger.info(f'Job {job_name} finished.')
     requests.post(config.hdt_upload_callback_url, json=action_payload)
+
+@app.task(ignore_result=True)
+def create_neo4j_conversion_job(action_payload, files_list):
+    lakefs_payload = LakefsMergeActionModel(**action_payload)
+    job = JobMan()
+    logger.info(lakefs_payload)
+    job_name = f'{lakefs_payload.hook_id}-{lakefs_payload.repository_id[:10]}-{lakefs_payload.branch_id}-{lakefs_payload.commit_id[:10]}'
+
+    logger.info(f'Job name: {job_name}')
+    # report the job id back ...
+    job.run_job(job_type="noe4j-rdf-job",
+                job_name=job_name,
+                repo=lakefs_payload.repository_id,
+                branch=lakefs_payload.branch_id,
+                args=files_list,
+                resources={
+                    "limits": {
+                        "cpu": 3,
+                        "memory": "20Gi"
+                    }
+                },
+                env_vars={
+                    "JAVA_OPTIONS": "-Xmx20G -XX:+UseParallelGC"
+                })
+    job.watch_pod(job_name=job_name)
+    logger.info(f'Job {job_name} finished.')
+    requests.post(config.neo4j_upload_callback_url, json=action_payload)
+
 
 
 @app.task(ignore_result=True)

@@ -69,7 +69,7 @@ async def handle_tag_creation(background_tasks: BackgroundTasks,
                               kg_name: str = Query(None),
                               cpu: str = Query(None),
                               memory: str = Query(None),
-                              hdt_path: str = Query('/hdt/'),
+                              hdt_path: str = Query('hdt/'),
                               action_model: LakefTagCreationModel=Body(...)
                               ):
     background_tasks.add_task(create_deployment_task, kg_name, cpu, memory, hdt_path, action_model)

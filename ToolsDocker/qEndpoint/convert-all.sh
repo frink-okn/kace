@@ -1,6 +1,6 @@
 #!/bin/bash
 
-set -e
+set -ex
 
 export WORKING_DIR=/mnt/repo
 
@@ -10,9 +10,9 @@ if [ "$#" -eq 0 ]; then
     exit 1
 fi
 
-export RIOT_TMP_DIR=$WORKING_DIR/riot-tmp/
-export HDT_TMP_DIR=$WORKING_DIR/hdt-tmp/
-export HDT_FINAL_DIR=$WORKING_DIR/hdt/
+export RIOT_TMP_DIR=$WORKING_DIR/riot-tmp
+export HDT_TMP_DIR=$WORKING_DIR/hdt-tmp
+export HDT_FINAL_DIR=$WORKING_DIR/hdt
 export REPORT_DIR=$WORKING_DIR/report
 
 rm -rf $RIOT_TMP_DIR/*
@@ -28,7 +28,7 @@ for file in "$@"; do
 done
 
 echo "combining "
-riot --debug  --nocheck -v --output TURTLE ${FILES[@]} > ${RIOT_TMP_DIR}/combined.ttl
+riot --merge --debug  --nocheck -v --output TURTLE ${FILES[@]} > ${RIOT_TMP_DIR}/combined.ttl
 
 echo "validating..."
 mkdir -p $REPORT_DIR
@@ -40,7 +40,9 @@ set -e
 mkdir -p ${HDT_TMP_DIR}
 mkdir -p ${HDT_FINAL_DIR}
 
-rdf2hdt.sh -index -quiet ${RIOT_TMP_DIR}/combined.ttl ${HDT_FINAL_DIR}/graph.hdt
+cd ${WORKING_DIR}
+
+rdf2hdt.sh -cattree -cattreelocation ${HDT_TMP_DIR} -index ${RIOT_TMP_DIR}/combined.ttl ${HDT_FINAL_DIR}/graph.hdt
 
 rm -rf ${RIOT_TMP_DIR}
 rm -rf ${HDT_TMP_DIR}

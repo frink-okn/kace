@@ -71,6 +71,9 @@ async def download_file(file_name, repo, branch, download_path,
     stat_obj = await response.json()
     file_size = stat_obj["size_bytes"]
     logger.info(f"Downloading {file_name}: {file_size}")
+    download_dir = os.path.dirname(download_path)
+    if not os.path.exists(download_dir):
+        os.mkdir(download_dir)
     with open(download_path, 'wb') as stream:
         file_url = (f'{config.lakefs_url}/api/v1/repositories/{urllib.parse.quote_plus(repo)}/refs/'
                     f'{urllib.parse.quote_plus(branch)}'
@@ -85,6 +88,7 @@ async def download_file(file_name, repo, branch, download_path,
                 stream.write(content)
             current_pos = to_bytes + 1
     logger.info(f"Download {file_name} complete")
+
 
 async def download_hdt_files(repo: str, branch: str, kg_name: str, hdt_path: str='hdt') -> None:
     base_dir = config.shared_data_dir + '/deploy'

@@ -1,0 +1,25 @@
+graph  {
+"securechain:LibraryVersion";
+"securechain:Library";
+"rdf:Statement";
+"https://wildlife.proto-okn.net/kg/Location";
+"https://wildlife.proto-okn.net/kg/Amphibian_name";
+"https://wildlife.proto-okn.net/kg/Bird_name";
+"securechain:Vulnerability";
+"owl:ObjectProperty";
+"owl:Class";
+"owl:Restriction";
+"securechain:LibraryVersion" -- "securechain:LibraryVersion" [dir=forward, arrowhead=normal, label="8238x securechain:dependsOn"];
+"securechain:LibraryVersion" -- "securechain:Library" [dir=forward, arrowhead=normal, label="7357x securechain:isVersionOf"];
+"securechain:LibraryVersion" -- "securechain:Vulnerability" [dir=forward, arrowhead=normal, label="301x securechain:affects"];
+"rdf:Statement" -- "https://wildlife.proto-okn.net/kg/Location" [dir=forward, arrowhead=normal, label="5205x rdf:object"];
+"rdf:Statement" -- "https://wildlife.proto-okn.net/kg/Amphibian_name" [dir=forward, arrowhead=normal, label="2723x rdf:subject"];
+"rdf:Statement" -- "https://wildlife.proto-okn.net/kg/Bird_name" [dir=forward, arrowhead=normal, label="2482x rdf:subject"];
+"https://wildlife.proto-okn.net/kg/Location" -- "https://wildlife.proto-okn.net/kg/Amphibian_name" [dir=forward, arrowhead=normal, label="2723x https://wildlife.proto-okn.net/kg/OBSERVED_AT"];
+"https://wildlife.proto-okn.net/kg/Location" -- "https://wildlife.proto-okn.net/kg/Bird_name" [dir=forward, arrowhead=normal, label="2482x https://wildlife.proto-okn.net/kg/OBSERVED_AT"];
+"owl:ObjectProperty" -- "owl:ObjectProperty" [dir=forward, arrowhead=normal, label="2x rdfs:subPropertyOf"];
+"owl:ObjectProperty" -- "owl:Class" [dir=forward, arrowhead=normal, label="2x rdfs:domain"];
+"owl:ObjectProperty" -- "owl:Restriction" [dir=forward, arrowhead=normal, label="2x owl:onProperty"];
+"owl:Class" -- "owl:Restriction" [dir=forward, arrowhead=normal, label="3x rdfs:subClassOf"];
+"owl:Class" -- "owl:Class" [dir=forward, arrowhead=normal, label="1x rdfs:subClassOf"];
+}

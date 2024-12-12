@@ -40,11 +40,13 @@ def create_hdt_conversion_job(action_payload, files_list):
                 resources={
                     "limits": {
                         "cpu": 3,
-                        "memory": "20Gi"
+                        "memory": "28Gi",
+                        "ephemeral-storage": "2Gi"
                     }
                 },
                 env_vars={
-                    "JAVA_OPTIONS": "-Xmx20G -XX:+UseParallelGC"
+                    "JAVA_OPTIONS": "-Xmx25G -Xms25G -Xss512m -XX:+UseParallelGC",
+                    "MEM_SIZE": "25G"
                 })
     job.watch_pod(job_name=job_name)
     logger.info(f'Job {job_name} finished.')

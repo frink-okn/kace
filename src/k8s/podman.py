@@ -17,7 +17,7 @@ mapping = {
 }
 
 config.load_incluster_config()
-
+# config.load_kube_config(config_file='/mnt/c/Users/kebedey/kubeconfig/kubeconfig-sterling-kebedey-kebedey', context='kebedey')
 class JobMan:
     def __init__(self):
         self.job_configs = {}
@@ -194,6 +194,3 @@ class JobMan:
         for pod in result.items:
             self.remove_pod_with_wait(pod.metadata.name)
 
-if __name__ == "__main__":
-    pod_man = JobMan()
-    pod_man.run_job("hdt-job","name1", "repo", "branch")

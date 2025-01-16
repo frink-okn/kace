@@ -8,7 +8,7 @@ image:
   repository: containers.renci.org/frink/kace
   pullPolicy: Always
   # Overrides the image tag whose default is the chart appVersion.
-  tag: "v0.0.1"
+  tag: "v0.0.9"
 
 imagePullSecrets: []
 nameOverride: ""

@@ -7,7 +7,7 @@ from kubernetes import client, config
 from kubernetes.client.rest import ApiException
 from log_util import LoggingUtil
 from config import config as app_config
-
+import time
 
 logger = LoggingUtil.init_logging("fuseki-k8s-man")
 
@@ -190,6 +190,106 @@ class ServerDeploymentManager:
         self.delete_service_k8s(parameters)
         self.delete_deployment_k8s(parameters)
         self.delete_ingress_k8s(parameters)
+
+    def is_service_running(self, service_name: str, annotations) -> bool:
+        """
+        Check if the specified service is running by querying its status.
+        """
+        k8s_client = client.CoreV1Api()
+        try:
+            service_status = k8s_client.read_namespaced_service(name=service_name, namespace=self.namespace)
+            for a in annotations:
+                assert annotations[a] == service_status.metadata.annotations[a]
+            # A service is considered running if it has been created
+            logger.info("Service status: {0}".format(service_status.status))
+            return True
+        except ApiException as e:
+            if e.status == 404:
+                logger.info(f"Service {service_name} not found.")
+            else:
+                logger.error(f"Error checking service status: {e}")
+            return False
+
+    def is_deployment_running(self, deployment_name: str, annotations) -> bool:
+        """
+        Check if the specified deployment is running by querying its status.
+        """
+        k8s_client = client.AppsV1Api()
+        try:
+            deployment_status = k8s_client.read_namespaced_deployment(name=deployment_name,
+                                                                             namespace=self.namespace)
+            for a in annotations:
+                assert annotations[a] == deployment_status.metadata.annotations[a]
+            # A deployment is considered running if all replicas are available
+            logger.info("Deployment status: {0}".format(deployment_status.status))
+            return deployment_status.status.available_replicas == deployment_status.status.replicas and (
+               not deployment_status.status.unavailable_replicas
+            )
+        except ApiException as e:
+            if e.status == 404:
+                logger.info(f"Deployment {deployment_name} not found.")
+            else:
+                logger.error(f"Error checking deployment status: {e}")
+            return False
+
+    def is_pod_running(self, pod_name: str, annotations) -> bool:
+        """
+        Check if the specified pod is running by querying its status.
+        """
+        k8s_client = client.CoreV1Api()
+        try:
+            pod_status = k8s_client.read_namespaced_pod(name=pod_name, namespace=self.namespace)
+            # A pod is considered running if its phase is "Running"
+            return pod_status.status.phase == "Running"
+        except ApiException as e:
+            if e.status == 404:
+                logger.info(f"Pod {pod_name} not found.")
+            else:
+                logger.error(f"Error checking pod status: {e}")
+            return False
+
+    def are_all_services_running(self, parameters: Dict[str, Any], annotations: Dict[str, Any]) -> bool:
+        """
+        Check if all services (configmap, service, deployment, ingress) are running.
+        """
+        config_map_name = self.get_config_map(parameters)["metadata"]["name"]
+        service_name = self.get_service(parameters)["metadata"]["name"]
+        deployment_name = self.get_deployment(parameters)["metadata"]["name"]
+        ingress_name = self.get_ingress(parameters)["metadata"]["name"]
+
+        return (self.is_service_running(service_name, annotations=annotations) and
+                self.is_deployment_running(deployment_name, annotations=annotations)
+                # and
+                # self.is_pod_running(deployment_name, annotations=annotations)
+                )
+
+    def wait_for_services_to_be_running(self, parameters: Dict[str, Any], max_retries: int = 10,
+                                        initial_delay: float = 1.0, annotations: Dict[str, Any] = None) -> bool:
+        """
+        Wait for all services to be running using exponential backoff.
+        :param parameters: Parameters for the services.
+        :param max_retries: Maximum number of retries.
+        :param initial_delay: Initial delay in seconds before the first retry.
+        :param annotations: expected annotations on k8s artifacts
+        :return: True if all services are running, False if max retries are exhausted.
+        """
+        retries = 0
+        delay = initial_delay
+
+        while retries < max_retries:
+            if self.are_all_services_running(parameters, annotations):
+                logger.info("All services are up and running.")
+                return True
+
+            logger.info(f"Services not yet running. Retrying in {delay} seconds... (Retry {retries + 1}/{max_retries})")
+            time.sleep(delay)
+
+            # Exponential backoff: double the delay for the next retry
+            delay *= 2
+            retries += 1
+
+        logger.error(f"Max retries ({max_retries}) exhausted. Services are not running.")
+        return False
 
 
 FUSEKI_TEMPLATE_DIR = (

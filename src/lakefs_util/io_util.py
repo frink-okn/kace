@@ -73,7 +73,7 @@ async def download_file(file_name, repo, branch, download_path,
     logger.info(f"Downloading {file_name}: {file_size}")
     download_dir = os.path.dirname(download_path)
     if not os.path.exists(download_dir):
-        os.mkdir(download_dir)
+        os.makedirs(download_dir)
     with open(download_path, 'wb') as stream:
         file_url = (f'{config.lakefs_url}/api/v1/repositories/{urllib.parse.quote_plus(repo)}/refs/'
                     f'{urllib.parse.quote_plus(branch)}'
@@ -116,6 +116,7 @@ async def download_hdt_files(repo: str, branch: str, kg_name: str, hdt_path: str
             offset += results["pagination"]["next_offset"]
             all_files += list([x['path'] for x in results["results"]])
         renames = {}
+        logger.info(f"Files to download: {all_files}")
         for file_name in all_files:
             if file_name.endswith('.hdt') or file_name.endswith('.hdt.index.v1-1'):
                 temp_file_name = branch + '-' + kg_name + "." + ".".join(file_name.split('/')[-1].split('.')[1:])
@@ -135,9 +136,13 @@ async def download_hdt_files(repo: str, branch: str, kg_name: str, hdt_path: str
 async def upload_files(repo: str, root_branch: str = "main", local_files: list[tuple[str, str]] = None):
     """Upload the result and clear dir"""
     # create client
-    client = lakefs.client.LakeFSClient(configuration=lakefs_sdk.configuration.Configuration(
-        config.lakefs_url,username=config.lakefs_access_key, password=config.lakefs_secret_key
-    ))
+    client = lakefs.client.LakeFSClient(
+        configuration=lakefs_sdk.configuration.Configuration(
+            config.lakefs_url,
+            username=config.lakefs_access_key,
+            password=config.lakefs_secret_key
+        )
+    )
     # get all tags
     results = client.tags_api.list_tags(repo)
     pagination = results.pagination
@@ -148,7 +153,7 @@ async def upload_files(repo: str, root_branch: str = "main", local_files: list[t
         tags += results
     # compute latest tag
     versions = [tag.id.lstrip('v') for tag in tags]
-    latest_tag =  "v" + bump_version(get_latest_version(versions), "patch") if len(versions) else "v0.0.1"
+    latest_tag = "v" + bump_version(get_latest_version(versions), "patch") if len(versions) else "v0.0.1"
     stable_branch_name = f"stable_{latest_tag.replace('.', '_')}"
     # create branch if not exists
     try:
@@ -157,8 +162,8 @@ async def upload_files(repo: str, root_branch: str = "main", local_files: list[t
             "source": root_branch
         })
     except Exception as e:
-        logger.error(e)
-        pass
+        logger.warn(e)
+
     # push local files.
     login_cookie = await login_and_get_cookies(config.lakefs_url, config.lakefs_access_key, config.lakefs_secret_key)
 
@@ -189,17 +194,22 @@ async def upload_files(repo: str, root_branch: str = "main", local_files: list[t
 
     # Commit
     client.commits_api.commit(repository=repo, branch=stable_branch_name, commit_creation={
-        "message": f"HDT Uploads for version {latest_tag}",
+        "message": f"Uploads for version {latest_tag}",
         "metadata": {
             "key": "value"
         }
     })
 
     # create tag
-    client.tags_api.create_tag(repository=repo, tag_creation={
-        "id": latest_tag,
-        "ref": stable_branch_name
-    })
+    # client.tags_api.create_tag(repository=repo, tag_creation={
+    #     "id": latest_tag,
+    #     "ref": stable_branch_name
+    # })
+
+    return {
+        "stable_branch_name": stable_branch_name,
+        "future_tag": latest_tag,
+    }
 
 
 def clean_up_files(repo: str):

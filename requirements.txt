@@ -13,4 +13,5 @@ semver
 lakefs==0.7.0
 lakefs-sdk==1.28.2
 jinja2
+slack-sdk
 

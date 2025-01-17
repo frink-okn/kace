@@ -7,6 +7,7 @@ class Config(BaseModel):
     lakefs_access_key: str
     lakefs_secret_key: str
     lakefs_url: str
+    lakefs_public_url: str
     shared_data_dir: str
     local_data_dir: str
     k8s_namespace: str
@@ -14,15 +15,21 @@ class Config(BaseModel):
     local_pvc_name: str
     hdt_upload_callback_url: str
     neo4j_upload_callback_url: str
-    slack_webhook_url: str
     spider_ip: str
     spider_port: int
     frink_address: str
+    slack_token: str
+    slack_channel: str
+    email_address: str
+    email_password: str
+    smtp_port: int
+    smtp_server: str
 
 
 config = Config(
     lakefs_access_key=os.environ.get('LAKEFS_ACCESS_KEY',''),
     lakefs_secret_key=os.environ.get('LAKEFS_SECRET_KEY',''),
+    lakefs_public_url = os.environ.get('LAKEFS_PUBLIC_URL',''),
     lakefs_url=os.environ.get('LAKEFS_URL','https://frink-lakefs.apps.renci.org'),
     shared_data_dir=os.environ.get('SHARED_DATA_DIR',''),
     local_data_dir=os.environ.get('LOCAL_DATA_DIR',f'{os.path.dirname(__file__)}/../data'),
@@ -34,6 +41,11 @@ config = Config(
     slack_webhook_url=os.environ.get('SLACK_URL', ''),
     spider_ip=os.environ.get('SPIDER_IP', ''),
     spider_port=int(os.environ.get('SPIDER_PORT', 9090)),
-    frink_address=os.environ.get('FRINK_ADDRESS', 'frink.apps.renci.org')
-
+    frink_address=os.environ.get('FRINK_ADDRESS', 'https://frink.apps.renci.org'),
+    slack_token=os.environ.get('SLACK_TOKEN', ''),
+    slack_channel=os.environ.get('SLACK_CHANNEL', ''),
+    email_address=os.environ.get('EMAIL_ADDRESS', ''),
+    email_password=os.environ.get('EMAIL_PASSWORD', ''),
+    smtp_server=os.environ.get('SMTP_SERVER', ''),
+    smtp_port=int(os.environ.get('SMTP_PORT', 25))
 )

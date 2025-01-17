@@ -36,12 +36,11 @@ class MailCanary:
                 <div class="details">
                     <p><strong>Service Name:</strong> {kg_name}</p>
                     <p><strong>Version:</strong> {version}</p>
-                    <p><strong>Access URL:</strong> <a href="{access_url}" target="_blank">FRINK Query Page</a></p>
+                    <p><strong>Access URL:</strong> <a href="https://{access_url}" target="_blank">FRINK Query Page</a></p>
                 </div>
                 <div class="content">
                     If you have any questions or need assistance, please contact us at 
-                    <a href="mailto:frink-okn@renci.org">frink-okn@renci.org</a> 
-                    or visit our support portal.
+                    <a href="mailto:frink-okn@renci.org">frink-okn@renci.org</a>.
                 </div>
             </div>
         </body>

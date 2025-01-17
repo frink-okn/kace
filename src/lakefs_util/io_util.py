@@ -16,6 +16,58 @@ import urllib.parse
 logger = LoggingUtil.init_logging('lakefs-io')
 
 
+def clear_directory(path, delete_root=False):
+    """
+    Recursively clears a directory by deleting all files and subdirectories within it.
+    Optionally deletes the supplied directory itself.
+
+    :param path: The path to the directory to be cleared.
+    :param delete_root: If True, the supplied directory will also be deleted. Default is False.
+    """
+    # Check if the path exists
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"The directory '{path}' does not exist.")
+
+    # Check if the path is a directory
+    if not os.path.isdir(path):
+        raise NotADirectoryError(f"'{path}' is not a directory.")
+
+    # Iterate over the contents of the directory
+    for item in os.listdir(path):
+        item_path = os.path.join(path, item)
+
+        try:
+            # If the item is a file or a symbolic link, delete it
+            if os.path.isfile(item_path) or os.path.islink(item_path):
+                os.unlink(item_path)
+                print(f"Deleted file: {item_path}")
+
+            # If the item is a directory, recursively clear it and then delete it
+            elif os.path.isdir(item_path):
+                clear_directory(item_path, delete_root=True)  # Recursively clear the subdirectory
+                shutil.rmtree(item_path)  # Delete the now-empty directory
+                print(f"Deleted directory: {item_path}")
+
+        except FileNotFoundError:
+            print(f"Warning: The path '{item_path}' no longer exists. Skipping...")
+        except PermissionError:
+            print(f"Warning: Permission denied for '{item_path}'. Skipping...")
+        except Exception as e:
+            print(f"Warning: An error occurred while processing '{item_path}': {e}. Skipping...")
+
+    # Optionally delete the root directory
+    if delete_root:
+        try:
+            shutil.rmtree(path)
+            print(f"Deleted root directory: {path}")
+        except FileNotFoundError:
+            print(f"Warning: The root directory '{path}' no longer exists. Skipping...")
+        except PermissionError:
+            print(f"Warning: Permission denied to delete the root directory '{path}'. Skipping...")
+        except Exception as e:
+            print(f"Warning: An error occurred while deleting the root directory '{path}': {e}. Skipping...")
+
+
 async def download_files(repo: str, branch: str, extensions: List = None):
     if extensions is None:
         extensions = [
@@ -37,8 +89,6 @@ async def download_files(repo: str, branch: str, extensions: List = None):
     async with aiohttp.ClientSession(cookies=cookie) as session:
         has_more = True
         offset = ""
-
-
         while has_more:
             url = lambda offset: (f'{config.lakefs_url}/api/v1/repositories/{urllib.parse.quote_plus(repo)}/refs/'
                                   f'{urllib.parse.quote_plus(branch)}'
@@ -53,6 +103,8 @@ async def download_files(repo: str, branch: str, extensions: List = None):
             offset += results["pagination"]["next_offset"]
             all_files += list([x['path'] for x in results["results"]])
         base_dir = config.local_data_dir + '/' + repo + '/' + branch
+        # clear dir
+        clear_directory(base_dir, delete_root=False)
         for file_name in all_files:
             if file_name.split('.')[-1] in extensions:
                 files_downloaded.append(file_name.lstrip('/'))

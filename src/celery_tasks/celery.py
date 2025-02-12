@@ -2,12 +2,15 @@ from celery import Celery
 from k8s.podman import JobMan
 from k8s.server_man import fuseki_server_manager, federation_server_manager, ldf_server_manager
 from models.lakefs_models import LakefsMergeActionModel, LakefTagCreationModel
-from lakefs_util.io_util import resolve_commit
+from lakefs_util.io_util import resolve_commit, upload_files
 from log_util import LoggingUtil
 from config import config
+import os
+import asyncio
 import requests
 from canary.slack import slack_canary
 from canary.mail import mail_canary
+import time
 
 logger = LoggingUtil.init_logging(__name__)
 
@@ -18,44 +21,95 @@ app = Celery('celery_tasks',
              include=['celery_tasks'])
 
 # Optional configuration, see the application user guide.
-app.conf.update(
-    result_expires=3600,
-    broker_connection_retry_on_startup=True,
-)
-
-
 @app.task(ignore_result=True)
 @slack_canary.slack_notify_on_failure("⚠️ To HDT conversion fail")
-def create_hdt_conversion_job(action_payload, files_list, cpu=3, memory="28Gi", ephemeral="2Gi",
-                              java_opts="-Xmx25G -Xms25G -Xss512m -XX:+UseParallelGC", mem_size="25G", notify_email=None):
+def create_hdt_conversion_job(action_payload,
+                              files_list,
+                              kg_name,
+                              cpu=3,
+                              memory="28Gi",
+                              ephemeral="2Gi",
+                              java_opts="-Xmx25G -Xms25G -Xss512m -XX:+UseParallelGC",
+                              mem_size="25G",
+                              notify_email=None,
+                              convert_to_hdt=True,
+                              hdt_path="/"
+                              ):
     lakefs_payload = LakefsMergeActionModel(**action_payload)
     job = JobMan()
     logger.info(lakefs_payload)
     job_name = f'{lakefs_payload.hook_id}-{lakefs_payload.repository_id[:10]}-{lakefs_payload.branch_id}-{lakefs_payload.commit_id[:10]}'
+    logger.info(f"Running as user: {os.getuid()}")
 
-    logger.info(f'Job name: {job_name}')
-    # report the job id back ...
-    job.run_job(job_type="hdt-job",
-                job_name=job_name,
-                repo=lakefs_payload.repository_id,
-                branch=lakefs_payload.branch_id,
-                args=files_list,
-                resources={
-                    "limits": {
-                        "cpu": cpu,
-                        "memory": memory,
-                        "ephemeral-storage": ephemeral
-                    }
-                },
-                env_vars={
-                    "JAVA_OPTIONS": java_opts,
-                    "MEM_SIZE": mem_size
-                })
-    job.watch_pod(job_name=job_name)
-    logger.info(f'Job {job_name} finished.')
+    working_dir = str(os.path.join("/mnt/repo", lakefs_payload.repository_id, lakefs_payload.branch_id))
+    logger.info("working directory: " + working_dir)
+
+    if convert_to_hdt:
+        logger.info(f'Job name: {job_name}')
+        # report the job id back ...
+        job.run_job(job_type="hdt-job",
+                    job_name=job_name,
+                    repo=lakefs_payload.repository_id,
+                    branch=lakefs_payload.branch_id,
+                    args=files_list,
+                    resources={
+                        "limits": {
+                            "cpu": cpu,
+                            "memory": memory,
+                            "ephemeral-storage": ephemeral
+                        }
+                    },
+                    env_vars={
+                        "JAVA_OPTIONS": java_opts,
+                        "MEM_SIZE": mem_size,
+                        "WORKING_DIR": working_dir
+                    })
+        job.watch_job(job_name=job_name)
+        logger.info(f'Job {job_name} finished.')
+
+    # lets create documentation job
+    if convert_to_hdt:
+        hdt_path = working_dir + '/hdt'
+    else:
+        hdt_path = working_dir + '/' + hdt_path
+
+    doc_job_name = job_name + '-doc'
+    job.run_job(
+        job_name=doc_job_name,
+        job_type='documentation-job',
+        env_vars={
+            "GH_TOKEN": config.gh_token,
+            "WORKING_DIR": working_dir
+        },
+        args=[
+            kg_name,
+            hdt_path,
+            kg_name,
+            kg_name + "-documentation-update"
+        ],
+        repo=lakefs_payload.repository_id,
+        branch=lakefs_payload.branch_id,
+        resources={
+            "limits": {
+                "cpu": cpu,
+                "memory": memory,
+                "ephemeral-storage": ephemeral
+            }
+        }
+    )
+    job.watch_job(job_name=doc_job_name)
+
     requests.post(config.hdt_upload_callback_url, params={
-        "notify_email": notify_email
+        "notify_email": notify_email,
+        "converted_hdt": convert_to_hdt
+
     }, json=action_payload)
+
+
+app.conf.update(
+    result_expires=3600,
+    broker_connection_retry_on_startup=True,
+)
 
 
 @app.task(ignore_result=True)
@@ -80,9 +134,10 @@ def create_neo4j_conversion_job(action_payload, files_list):
                     }
                 },
                 env_vars={
-                    "JAVA_OPTIONS": "-Xmx20G -XX:+UseParallelGC"
+                    "JAVA_OPTIONS": "-Xmx20G -XX:+UseParallelGC",
+                    "WORKING_DIR": os.path.join("/mnt/repo", lakefs_payload.repository_id, lakefs_payload.branch_id)
                 })
-    job.watch_pod(job_name=job_name)
+    job.watch_job(job_name=job_name)
     logger.info(f'Job {job_name} finished.')
     requests.post(config.neo4j_upload_callback_url, json=action_payload)
 
@@ -166,7 +221,7 @@ def create_deployment(kg_name: str, cpu: str, memory: str, lakefs_action, notify
                           str(config.spider_port)
                           ]
                     )
-        job.watch_pod(job_name=job_name)
+        job.watch_job(job_name=job_name)
         logger.info(f'Job {job_name} finished.')
         # requests.post(config.hdt_upload_callback_url, json=action_payload)
     except Exception as e:

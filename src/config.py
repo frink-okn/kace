@@ -3,6 +3,9 @@ import os
 
 
 
+
+
+
 class Config(BaseModel):
     lakefs_access_key: str
     lakefs_secret_key: str
@@ -24,6 +27,7 @@ class Config(BaseModel):
     email_password: str
     smtp_port: int
     smtp_server: str
+    gh_token: str
 
 
 config = Config(
@@ -47,5 +51,6 @@ config = Config(
     email_address=os.environ.get('EMAIL_ADDRESS', ''),
     email_password=os.environ.get('EMAIL_PASSWORD', ''),
     smtp_server=os.environ.get('SMTP_SERVER', ''),
-    smtp_port=int(os.environ.get('SMTP_PORT', 25))
+    smtp_port=int(os.environ.get('SMTP_PORT', 25)),
+    gh_token=os.environ.get('GH_TOKEN', '')
 )

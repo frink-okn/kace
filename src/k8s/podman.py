@@ -12,7 +12,9 @@ logger = LoggingUtil.init_logging(__name__)
 mapping = {
     "hdt-job": os.path.dirname(os.path.realpath(__file__)) + os.path.join(os.path.sep + "templates", "hdt-conversion.yaml"),
     "spider-job": os.path.dirname(os.path.realpath(__file__)) + os.path.join(os.path.sep + "templates", "spider-client.yaml"),
-    "noe4j-rdf-job": os.path.dirname(os.path.realpath(__file__)) + os.path.join(os.path.sep + "templates", "neo4j-rdf-job.yaml")
+    "noe4j-rdf-job": os.path.dirname(os.path.realpath(__file__)) + os.path.join(os.path.sep + "templates", "neo4j-rdf-job.yaml"),
+    "documentation-job": os.path.dirname(os.path.realpath(__file__)) + os.path.join(os.path.sep + "templates", "documentation-job.yaml")
+
     ## add other pods here
 }
 
@@ -96,7 +98,7 @@ class JobMan:
             client.V1VolumeMount(
                 name="data",
                 mount_path="/mnt/repo",
-                sub_path=f"{repo}/{branch}"
+                # sub_path=f"{repo}/{branch}"
             )
         ]
         pod_template.containers[0].volume_mounts = volume_mounts
@@ -106,32 +108,45 @@ class JobMan:
         self.remove_job(job_name)
         return api.create_namespaced_job(namespace=self.namespace, body=job)
 
-    def watch_pod(self, job_name):
+    def watch_job(self, job_name, poll_interval=5):
+        """
+        Watch the Job's status until it completes (succeeds or fails).
+        This function will continue polling indefinitely until the Job reaches a terminal state.
 
-        # Get the API instance for the Pod
-        v1 = client.CoreV1Api()
+        Args:
+            job_name (str): The name of the Job.
+            poll_interval (int): Seconds to wait between successive status checks.
 
-        # Create a watch object
-        w = watch.Watch()
+        Raises:
+            Exception: If the Job fails.
+        """
+        batch_v1 = client.BatchV1Api()
 
-        try:
-            # Watch for Pod events in the specified namespace
-            for event in w.stream(v1.list_namespaced_pod, namespace=self.namespace, label_selector=f"job-name={job_name}"):
-                pod = event['object']
-                event_type = event['type']
-                # Print the event type and Pod name
-                logger.info(f"Event: {event_type} Pod: {pod.metadata.name}")
-                # Check if the Pod has a status phase of "Succeeded" or "Failed"
-                if pod.status.phase == 'Succeeded':
-                    logger.info(f"Pod {pod.metadata.name} succeeded.")
-                    w.stop()
-                elif pod.status.phase == 'Failed':
-                    logger.info(f"Pod {pod.metadata.name} failed.")
-                    w.stop()
-                    raise Exception(f"Pod {pod.metadata.name} failed.")
+        while True:
+            try:
+                job = batch_v1.read_namespaced_job(name=job_name, namespace=self.namespace)
+            except client.exceptions.ApiException as e:
+                logger.error(f"Failed to fetch Job '{job_name}': {e}")
+                raise Exception(f"Failed to fetch Job '{job_name}': {e} , likely the job was never created.")
 
-        except client.exceptions.ApiException as e:
-            logger.info(f"An error occurred: {e}")
+            # Use 0 as default if the values are None.
+            succeeded = job.status.succeeded or 0
+            failed = job.status.failed or 0
+            # If backoffLimit is not set, Kubernetes defaults to 6 retries.
+            backoff_limit = job.spec.backoff_limit if job.spec.backoff_limit is not None else 6
+
+            logger.info(f"Job '{job_name}' status: succeeded={succeeded}, failed={failed}")
+
+            if succeeded > 0:
+                logger.info(f"Job '{job_name}' completed successfully.")
+                return
+
+            # Consider the Job failed if the number of failures reaches the backoff limit.
+            if failed >= backoff_limit:
+                logger.error(f"Job '{job_name}' failed after {failed} attempts.")
+                raise Exception(f"Job '{job_name}' failed.")
+
+            time.sleep(poll_interval)
 
     def remove_job(self, name):
         """ Remove a job. This call is a blocking call, it will check and wait until the job is delete.

@@ -2,7 +2,7 @@
 
 set -ex
 
-export WORKING_DIR=/mnt/repo
+export WORKING_DIR=${WORKING_DIR:-/mnt/repo}
 
 # Check if at least one file is provided
 if [ "$#" -eq 0 ]; then

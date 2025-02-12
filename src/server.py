@@ -10,48 +10,63 @@ from canary.mail import mail_canary
 from canary.slack import slack_canary
 
 
-
 app = FastAPI(title="KACE Server",
               description="Kubernetes artifacts Creation Engine (KACE) is a webserver for "
                           "managing k8s workflows and event in sync with Lakefs data updates.")
 
 
 @app.post('/upload_hdt_callback')
-async def upload_hdt_callback(action_model: LakefsMergeActionModel, notify_email: str = Query('')):
+async def upload_hdt_callback(action_model: LakefsMergeActionModel, notify_email: str = Query(''),
+                              converted_hdt: bool = Query(False)):
     hdt_location = config.local_data_dir + '/' + action_model.repository_id + '/' + action_model.branch_id + '/hdt'
-    report_location = config.local_data_dir + '/' + action_model.repository_id + '/' + action_model.branch_id + '/report'
+    try:
+        with open(config.local_data_dir + action_model.repository_id + '/' + action_model.branch_id + '/'+ 'pr.md') as stream:
+            pr_link = stream.read()
+    except Exception as e:
+        slack_canary.notify_event("⚠️ Github documentation PR link not found",
+                                  repository_id=action_model.repository_id,
+                                  branch_id=action_model.branch_id,
+                                  error=e)
+        raise e
+
     try:
         stable_branch = await upload_files(
             repo=action_model.repository_id,
             root_branch=action_model.branch_id,
+            # If no conversion is done we will use this as a way to create a branch to tag.
             local_files=[
                 (f'{hdt_location}/graph.hdt', 'hdt'),
                 (f'{hdt_location}/graph.hdt.index.v1-1', 'hdt'),
-                # (f'{report_location}/graph_stats.json', 'report'),
-                # (f'{report_location}/riot_validate.log', 'report'),
-                # (f'{report_location}/schema.dot', 'report')
-            ]
+            ] if converted_hdt else []
         )
-        email_to = notify_email
+
         branch_name = stable_branch["stable_branch_name"]
         tag = stable_branch["future_tag"]
-
-        mail_canary.send_review_email(
-            recipient_email=email_to,
-            branch_name=branch_name,
-            version=tag,
-            repository_name=action_model.repository_id
-        )
         slack_canary.notify_event("✔️ HDT file uploaded.",
                                   repository_id=action_model.repository_id,
                                   branch_id=action_model.branch_id,
                                   )
-    except Exception as e :
+    except Exception as e:
         slack_canary.notify_event("⚠️ HDT file uploaded failed.",
                                   repository_id=action_model.repository_id,
                                   branch_id=action_model.branch_id,
                                   error=e)
+        raise e
 
+    email_to = notify_email
+    mail_canary.send_review_email(
+        recipient_email=email_to,
+        branch_name=branch_name,
+        version=tag,
+        repository_name=action_model.repository_id,
+        github_pr=pr_link
+    )
+    slack_canary.notify_event("✔️ Conversion and Documentation complete.",
+                              repository_id=action_model.repository_id,
+                              branch_id=action_model.branch_id,
+                              github_pr=pr_link,
+                              lakefs_branch=branch_name
+                              )
 
 
 @app.post('/upload_neo4j_files')
@@ -80,6 +95,7 @@ async def upload_neo4j_files(action_model: LakefsMergeActionModel):
                                   branch_id=action_model.branch_id,
                                   error=e)
 
+
 async def create_HDT_conversion_task(
         action_model: LakefsMergeActionModel,
         cpu,
@@ -87,32 +103,49 @@ async def create_HDT_conversion_task(
         ephemeral,
         java_opts,
         mem_size,
-        notify_email
+        notify_email,
+        convert_hdt,
+        hdt_path,
+        kg_name
 ):
-    rdf_files = await download_files(repo=action_model.repository_id, branch=action_model.branch_id)
+    if convert_hdt:
+        files = await download_files(repo=action_model.repository_id, branch=action_model.branch_id)
+    else:
+        files = await download_files(repo=action_model.repository_id, branch=action_model.branch_id, extensions=[
+            'hdt'
+        ])
+
+
     create_hdt_conversion_job.delay(action_model.dict(),
-                                    files_list=rdf_files,
+                                    files_list=files,
                                     cpu=cpu,
                                     memory=memory,
                                     ephemeral=ephemeral,
                                     java_opts=java_opts,
                                     mem_size=mem_size,
-                                    notify_email=notify_email
+                                    notify_email=notify_email,
+                                    convert_to_hdt=convert_hdt,
+                                    hdt_path=hdt_path,
+                                    kg_name=kg_name
                                     )
 
 
 @app.post("/convert_to_hdt")
 async def convert_to_hdt(action_model: LakefsMergeActionModel,
                          background_tasks: BackgroundTasks,
-                         cpu=Query(3),
-                         memory=Query("28Gi"),
-                         ephemeral=Query("2Gi"),
-                         java_opts=Query("-Xmx25G -Xms25G -Xss512m -XX:+UseParallelGC"),
-                         mem_size=Query("25G"),
-                         notify_email=Query('')
+                         kg_name: str = Query(),
+                         cpu: int = Query(3),
+                         memory: str = Query("28Gi"),
+                         ephemeral: str = Query("2Gi"),
+                         java_opts: str = Query("-Xmx25G -Xms25G -Xss512m -XX:+UseParallelGC"),
+                         mem_size: str = Query("25G"),
+                         notify_email: str = Query(''),
+                         hdt_exists: bool = Query(False),
+                         hdt_path: str = Query('hdt/'),
+
                          ):
     slack_canary.notify_event(
-        event_name="Converting files to HDT",
+        event_name="Merge to Main",
         repository=action_model.repository_id,
         commit=action_model.commit_id,
         branch=action_model.branch_id
@@ -125,7 +158,10 @@ async def convert_to_hdt(action_model: LakefsMergeActionModel,
                               ephemeral=ephemeral,
                               java_opts=java_opts,
                               mem_size=mem_size,
-                              notify_email=notify_email
+                              notify_email=notify_email,
+                              convert_hdt=not hdt_exists,
+                              hdt_path=hdt_path,
+                              kg_name=kg_name
                               )
     return "Started conversion, please check repo tag for uploads."
 

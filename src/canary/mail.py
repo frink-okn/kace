@@ -2,7 +2,10 @@ import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from config import config
+from log_util import LoggingUtil
 
+
+logger = LoggingUtil.init_logging(__name__)
 
 class MailCanary:
     def __init__(self, smtp_server, smtp_port, sender_email, sender_password=None):
@@ -51,7 +54,8 @@ class MailCanary:
                               repository_url,
                               repository_name,
                               branch_name,
-                              version):
+                              version,
+                              github_pr):
         return f"""
         <!DOCTYPE html>
         <html lang="en">
@@ -68,7 +72,7 @@ class MailCanary:
             change to your knowledge graph.</p>
         
         
-        
+            <h4> Lakefs Reviews </h4>
             <p>
                 Your most recent lakeFS upload to <a href="{repository_url}/objects">{repository_name}</a> 
                 has been successfully converted to HDT.
@@ -95,9 +99,14 @@ class MailCanary:
                 
                 <li>Submit the form by clicking "Create".</li>
             </ol>
+            <h4>Github Documentation Updates</h4>
+            <ol>
+                <li>Here's a link to <a href="{github_pr}">Graph Documentation PR</a></li>
+                <li>Assign yourself as the reviewer and approve this PR in github if documentation aligns.</li>
+            </ol>
         
-            <p>When the above steps are properly completed, this version of your knowledge graph will be deployed in the query servers, and 
-             you will receive another notification once the deployment is complete.</p>
+            <p>When the above steps are properly completed, this version of your knowledge graph will be deployed in the 
+            query servers, and you will receive another notification once the deployment is complete.</p>
             
             <p>If you have any questions or need further assistance, please don't hesitate to reach out to 
             <a href="mailto:frink-okn@renci.org">frink-okn@renci.org</a> .</p>
@@ -119,12 +128,14 @@ class MailCanary:
             # Create the email
             message = MIMEMultipart()
             message['From'] = self.sender_email
-            message['To'] = recipient_email
+            message['To'] = ", ".join([x.strip() for x in recipient_email.split(',')])
             message['Subject'] = subject
             message.attach(MIMEText(body, 'html'))
 
             # Connect to the SMTP server and send the email
             with smtplib.SMTP(self.smtp_server, self.smtp_port) as server:
+                print(self.smtp_server, self.smtp_port)
+                server.connect(self.smtp_server, self.smtp_port)
                 server.starttls()  # Secure the connection
                 if self.sender_password:
                     server.login(self.sender_email, self.sender_password)
@@ -133,6 +144,7 @@ class MailCanary:
             print(f"Email sent to {recipient_email}")
 
         except Exception as e:
+            raise e
             print(f"Failed to send email: {e}")
 
     def notify_event(self, recipient_email, event_name, **kwargs):
@@ -152,14 +164,17 @@ class MailCanary:
                           recipient_email: str,
                           repository_name: str,
                           version: str,
-                          branch_name: str
+                          branch_name: str,
+                          github_pr: str
                           ):
         repository_url = config.lakefs_public_url.rstrip('/') + '/repositories/' + repository_name
+        logger.info(f"Sending review email to {recipient_email}")
         email_body = self.review_email_template(
             repository_url=repository_url,
             repository_name=repository_name,
             version=version,
             branch_name=branch_name,
+            github_pr=github_pr
         )
         self.send_email(recipient_email, "Deployment Review Request", email_body)
 

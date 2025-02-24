@@ -35,6 +35,7 @@ def create_hdt_conversion_job(action_payload,
                               convert_to_hdt=True,
                               hdt_path="/"
                               ):
+    logger.info(f"Convert to HDT ***************************** {type(convert_to_hdt)} : {convert_to_hdt}")
     lakefs_payload = LakefsMergeActionModel(**action_payload)
     job = JobMan()
     logger.info(lakefs_payload)

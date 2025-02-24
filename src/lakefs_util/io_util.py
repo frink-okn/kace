@@ -2,7 +2,7 @@ import os, shutil
 import lakefs.client
 import aiohttp
 import lakefs_sdk.configuration
-
+import asyncio
 from config import config
 from log_util import LoggingUtil
 from lakefs_util.semver_util import get_latest_version, bump_version
@@ -225,7 +225,8 @@ async def upload_files(repo: str, root_branch: str = "main", local_files: list[t
 
     for file, remote_path in local_files:
         async with aiohttp.ClientSession(cookies=login_cookie) as session:
-            with open(file, "rb") as stream:
+            stream = await open_file_with_retry(file, mode='rb')
+            with stream:
                 # chunk generator
                 async def file_chunks():
                     while True:
@@ -281,6 +282,20 @@ def resolve_commit(repo, commit_id) -> Commit:
     ))
     return client.commits_api.get_commit(repository=repo, commit_id=commit_id)
 
+
+async def open_file_with_retry(filepath: str, mode: str = "rb", retries: int = 10, initial_delay: float = 1):
+    delay = initial_delay
+    for attempt in range(1, retries + 1):
+        try:
+            stream = open(filepath, mode)
+            logger.info(f"Opened file {filepath} after {attempt} attempts")
+            return stream
+        except Exception as e:
+            logger.error(f"Error opening file {filepath} ... retrying in {delay}")
+            if attempt == retries:
+                raise e
+            await asyncio.sleep(delay)
+            delay *= 2
 
 # if __name__ == '__main__':
     # import asyncio

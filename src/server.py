@@ -1,10 +1,11 @@
+import logging
 from http.client import HTTPException
 
 import uvicorn
 from fastapi import FastAPI, BackgroundTasks, Query, Body
 from models.lakefs_models import LakefsMergeActionModel, LakefTagCreationModel
 from celery_tasks.celery import create_hdt_conversion_job, create_deployment, create_neo4j_conversion_job
-from lakefs_util.io_util import download_files, upload_files, download_hdt_files
+from lakefs_util.io_util import download_files, upload_files, download_hdt_files, open_file_with_retry
 from config import config
 from canary.mail import mail_canary
 from canary.slack import slack_canary
@@ -20,8 +21,12 @@ async def upload_hdt_callback(action_model: LakefsMergeActionModel, notify_email
                               converted_hdt: bool = Query(False)):
     hdt_location = config.local_data_dir + '/' + action_model.repository_id + '/' + action_model.branch_id + '/hdt'
     try:
-        with open(config.local_data_dir + action_model.repository_id + '/' + action_model.branch_id + '/'+ 'pr.md') as stream:
-            pr_link = stream.read()
+        stream = await open_file_with_retry(
+            config.local_data_dir + action_model.repository_id + '/' + action_model.branch_id + '/' + 'pr.md',
+            "r"
+        )
+        with stream:
+            pr_link, git_branch = stream.read().split(',')
     except Exception as e:
         slack_canary.notify_event("⚠️ Github documentation PR link not found",
                                   repository_id=action_model.repository_id,
@@ -59,7 +64,8 @@ async def upload_hdt_callback(action_model: LakefsMergeActionModel, notify_email
         branch_name=branch_name,
         version=tag,
         repository_name=action_model.repository_id,
-        github_pr=pr_link
+        github_pr=pr_link,
+        github_branch=git_branch
     )
     slack_canary.notify_event("✔️ Conversion and Documentation complete.",
                               repository_id=action_model.repository_id,

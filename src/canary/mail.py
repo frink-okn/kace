@@ -55,7 +55,8 @@ class MailCanary:
                               repository_name,
                               branch_name,
                               version,
-                              github_pr):
+                              github_pr,
+                              github_branch):
         return f"""
         <!DOCTYPE html>
         <html lang="en">
@@ -99,10 +100,12 @@ class MailCanary:
                 
                 <li>Submit the form by clicking "Create".</li>
             </ol>
-            <h4>Github Documentation Updates</h4>
+            <h4>Automated Graph Characterization Updates</h4>
             <ol>
-                <li>Here's a link to <a href="{github_pr}">Graph Documentation PR</a></li>
-                <li>Assign yourself as the reviewer and approve this PR in github if documentation aligns.</li>
+                <li>To view any changes to your automated graph characterization please follow this link: <a href="{github_branch}">
+                Graph Characterization Branch</a></li>
+                <li>We have also created a github pull request for your review <a href="{github_pr}">Link to Pull request</a></li>
+                <li>Please review this automated characterization to ensure it aligns with your Graph.</li>
             </ol>
         
             <p>When the above steps are properly completed, this version of your knowledge graph will be deployed in the 
@@ -145,7 +148,6 @@ class MailCanary:
 
         except Exception as e:
             raise e
-            print(f"Failed to send email: {e}")
 
     def notify_event(self, recipient_email, event_name, **kwargs):
         """
@@ -165,7 +167,8 @@ class MailCanary:
                           repository_name: str,
                           version: str,
                           branch_name: str,
-                          github_pr: str
+                          github_pr: str,
+                          github_branch: str,
                           ):
         repository_url = config.lakefs_public_url.rstrip('/') + '/repositories/' + repository_name
         logger.info(f"Sending review email to {recipient_email}")
@@ -174,7 +177,8 @@ class MailCanary:
             repository_name=repository_name,
             version=version,
             branch_name=branch_name,
-            github_pr=github_pr
+            github_pr=github_pr,
+            github_branch=github_branch
         )
         self.send_email(recipient_email, "Deployment Review Request", email_body)
 

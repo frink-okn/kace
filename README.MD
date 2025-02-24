@@ -7,12 +7,12 @@ on k8s cluster aiding with automation of service delivery.
 ### Features
 
 * Conversion of RDF formats to HDT
-* Deployment of Fuseki Sparql Endpoints
-
-
-### Upcoming
-* Conversion of Neo4j files.
 * Reporting on basic graph schema.
+* Deployment of Fuseki Sparql Endpoints
 * Workflow for updating Federation and LDF servers.
 * Liveliness probe after deployment.
 * Notifications on events in workflows.
+
+
+Upcoming:
+* Conversion of Neo4j files. 

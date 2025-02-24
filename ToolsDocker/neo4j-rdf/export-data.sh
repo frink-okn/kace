@@ -5,7 +5,7 @@ set -euo pipefail
 trap 'error_handler $? $LINENO $BASH_LINENO "$BASH_COMMAND" $(printf "::%s" ${FUNCNAME[@]:-})' ERR
 
 # Constants
-readonly DATADIR="/mnt/repo"
+readonly DATADIR=${WORKING_DIR:-/mnt/repo}
 readonly LOG_FILE="${DATADIR}/neo4j-logs/conversion.log"
 readonly MAX_RETRIES=3
 readonly STARTUP_TIMEOUT=60  # seconds

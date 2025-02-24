@@ -2,7 +2,7 @@ import os, shutil
 import lakefs.client
 import aiohttp
 import lakefs_sdk.configuration
-
+import asyncio
 from config import config
 from log_util import LoggingUtil
 from lakefs_util.semver_util import get_latest_version, bump_version
@@ -71,18 +71,19 @@ def clear_directory(path, delete_root=False):
 async def download_files(repo: str, branch: str, extensions: List = None):
     if extensions is None:
         extensions = [
-                "rdf",  # RDF/XML
-                "xml",  # RDF/XML, TriX
-                "ttl",  # Turtle
-                "nt",  # N-Triples
-                "nq",  # N-Quads
-                "jsonld",  # JSON-LD
-                "json",  # JSON-LD
-                "rj",  # RDF/JSON
-                "trig",  # TriG
-                "trix",  # TriX
-                "n3"  # N3
-            ]
+            "rdf",  # RDF/XML
+            "xml",  # RDF/XML, TriX
+            "ttl",  # Turtle
+            "nt",  # N-Triples
+            "nq",  # N-Quads
+            "jsonld",  # JSON-LD
+            "json",  # JSON-LD
+            "rj",  # RDF/JSON
+            "trig",  # TriG
+            "trix",  # TriX
+            "n3"  # N3
+        ]
+    logger.info(f"Downloading {extensions} file types")
     cookie = await login_and_get_cookies(config.lakefs_url, config.lakefs_access_key, config.lakefs_secret_key)
     all_files = []
     files_downloaded = []
@@ -102,9 +103,12 @@ async def download_files(repo: str, branch: str, extensions: List = None):
             has_more = results["pagination"]["has_more"]
             offset += results["pagination"]["next_offset"]
             all_files += list([x['path'] for x in results["results"]])
-        base_dir = config.local_data_dir + '/' + repo + '/' + branch
-        # clear dir
-        clear_directory(base_dir, delete_root=False)
+        base_dir = os.path.join(config.local_data_dir, repo, branch)
+        if os.path.exists(base_dir):
+            clear_directory(base_dir, delete_root=False)
+        else:
+            logger.info(f"Directory {base_dir} does not exist; creating it ")
+            os.makedirs(base_dir)
         for file_name in all_files:
             if file_name.split('.')[-1] in extensions:
                 files_downloaded.append(file_name.lstrip('/'))
@@ -221,7 +225,8 @@ async def upload_files(repo: str, root_branch: str = "main", local_files: list[t
 
     for file, remote_path in local_files:
         async with aiohttp.ClientSession(cookies=login_cookie) as session:
-            with open(file, "rb") as stream:
+            stream = await open_file_with_retry(file, mode='rb')
+            with stream:
                 # chunk generator
                 async def file_chunks():
                     while True:
@@ -243,20 +248,14 @@ async def upload_files(repo: str, root_branch: str = "main", local_files: list[t
                         logger.error(f"Error uploading file: {txt}")
                         raise Exception(f"Error uploading file: {response.status}")
                     logger.info(f"Uploaded {path}")
-
-    # Commit
-    client.commits_api.commit(repository=repo, branch=stable_branch_name, commit_creation={
-        "message": f"Uploads for version {latest_tag}",
-        "metadata": {
-            "key": "value"
-        }
-    })
-
-    # create tag
-    # client.tags_api.create_tag(repository=repo, tag_creation={
-    #     "id": latest_tag,
-    #     "ref": stable_branch_name
-    # })
+    if len(local_files):
+        # Commit
+        client.commits_api.commit(repository=repo, branch=stable_branch_name, commit_creation={
+            "message": f"Uploads for version {latest_tag}",
+            "metadata": {
+                "key": "value"
+            }
+        })
 
     return {
         "stable_branch_name": stable_branch_name,
@@ -283,6 +282,20 @@ def resolve_commit(repo, commit_id) -> Commit:
     ))
     return client.commits_api.get_commit(repository=repo, commit_id=commit_id)
 
+
+async def open_file_with_retry(filepath: str, mode: str = "rb", retries: int = 10, initial_delay: float = 1):
+    delay = initial_delay
+    for attempt in range(1, retries + 1):
+        try:
+            stream = open(filepath, mode)
+            logger.info(f"Opened file {filepath} after {attempt} attempts")
+            return stream
+        except Exception as e:
+            logger.error(f"Error opening file {filepath} ... retrying in {delay}")
+            if attempt == retries:
+                raise e
+            await asyncio.sleep(delay)
+            delay *= 2
 
 # if __name__ == '__main__':
     # import asyncio

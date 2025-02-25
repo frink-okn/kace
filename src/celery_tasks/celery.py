@@ -2,15 +2,15 @@ from celery import Celery
 from k8s.podman import JobMan
 from k8s.server_man import fuseki_server_manager, federation_server_manager, ldf_server_manager
 from models.lakefs_models import LakefsMergeActionModel, LakefTagCreationModel
+from models.kg_metadata import KGConfig
 from lakefs_util.io_util import resolve_commit, upload_files
 from log_util import LoggingUtil
 from config import config
 import os
-import asyncio
 import requests
 from canary.slack import slack_canary
 from canary.mail import mail_canary
-import time
+import asyncio
 
 logger = LoggingUtil.init_logging(__name__)
 
@@ -25,13 +25,13 @@ app = Celery('celery_tasks',
 @slack_canary.slack_notify_on_failure("⚠️ To HDT conversion fail")
 def create_hdt_conversion_job(action_payload,
                               files_list,
-                              kg_name,
+                              doc_path,
+                              kg_title,
                               cpu=3,
                               memory="28Gi",
                               ephemeral="2Gi",
                               java_opts="-Xmx25G -Xms25G -Xss512m -XX:+UseParallelGC",
                               mem_size="25G",
-                              notify_email=None,
                               convert_to_hdt=True,
                               hdt_path="/"
                               ):
@@ -83,10 +83,10 @@ def create_hdt_conversion_job(action_payload,
             "WORKING_DIR": working_dir
         },
         args=[
-            kg_name,
+            doc_path,
             hdt_path,
-            kg_name,
-            kg_name + "-documentation-update"
+            kg_title,
+            kg_title + "-documentation-update"
         ],
         repo=lakefs_payload.repository_id,
         branch=lakefs_payload.branch_id,
@@ -101,9 +101,7 @@ def create_hdt_conversion_job(action_payload,
     job.watch_job(job_name=doc_job_name)
 
     requests.post(config.hdt_upload_callback_url, params={
-        "notify_email": notify_email,
         "converted_hdt": convert_to_hdt
-
     }, json=action_payload)
 
 
@@ -227,11 +225,11 @@ def create_deployment(kg_name: str, cpu: str, memory: str, lakefs_action, notify
         # requests.post(config.hdt_upload_callback_url, json=action_payload)
     except Exception as e:
         logger.exception(f'Spider Job failed {job_name} : {str(e)}')
-
+    kg_config = asyncio.run(KGConfig.from_git()).get_by_repo(lakefs_action.repository_id)
     mail_canary.send_deployed_email(
-        kg_name=kg_name,
+        kg_name=kg_config.title,
         version=lakefs_action.tag_id,
-        recipient_email=notify_email,
+        recipient_email=kg_config.contact.email,
     )
 
 if __name__ == '__main__':

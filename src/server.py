@@ -4,6 +4,7 @@ from http.client import HTTPException
 import uvicorn
 from fastapi import FastAPI, BackgroundTasks, Query, Body
 from models.lakefs_models import LakefsMergeActionModel, LakefTagCreationModel
+from models.kg_metadata import KGConfig
 from celery_tasks.celery import create_hdt_conversion_job, create_deployment, create_neo4j_conversion_job
 from lakefs_util.io_util import download_files, upload_files, download_hdt_files, open_file_with_retry
 from config import config
@@ -17,8 +18,9 @@ app = FastAPI(title="KACE Server",
 
 
 @app.post('/upload_hdt_callback')
-async def upload_hdt_callback(action_model: LakefsMergeActionModel, notify_email: str = Query(''),
+async def upload_hdt_callback(action_model: LakefsMergeActionModel,
                               converted_hdt: bool = Query(False)):
+    kg_config = (await KGConfig.from_git()).get_by_repo(action_model.repository_id)
     hdt_location = config.local_data_dir + '/' + action_model.repository_id + '/' + action_model.branch_id + '/hdt'
     try:
         stream = await open_file_with_retry(
@@ -57,8 +59,7 @@ async def upload_hdt_callback(action_model: LakefsMergeActionModel, notify_email
                                   branch_id=action_model.branch_id,
                                   error=e)
         raise e
-
-    email_to = notify_email
+    email_to = kg_config.contact.email
     mail_canary.send_review_email(
         recipient_email=email_to,
         branch_name=branch_name,
@@ -109,10 +110,10 @@ async def create_HDT_conversion_task(
         ephemeral,
         java_opts,
         mem_size,
-        notify_email,
         convert_hdt,
         hdt_path,
-        kg_name
+        doc_path,
+        kg_title
 ):
     if convert_hdt:
         files = await download_files(repo=action_model.repository_id, branch=action_model.branch_id)
@@ -129,27 +130,31 @@ async def create_HDT_conversion_task(
                                     ephemeral=ephemeral,
                                     java_opts=java_opts,
                                     mem_size=mem_size,
-                                    notify_email=notify_email,
                                     convert_to_hdt=convert_hdt,
                                     hdt_path=hdt_path,
-                                    kg_name=kg_name
+                                    doc_path=doc_path,
+                                    kg_title=kg_title
                                     )
 
 
 @app.post("/convert_to_hdt")
 async def convert_to_hdt(action_model: LakefsMergeActionModel,
                          background_tasks: BackgroundTasks,
-                         kg_name: str = Query(),
                          cpu: int = Query(3),
                          memory: str = Query("28Gi"),
                          ephemeral: str = Query("2Gi"),
                          java_opts: str = Query("-Xmx25G -Xms25G -Xss512m -XX:+UseParallelGC"),
                          mem_size: str = Query("25G"),
-                         notify_email: str = Query(''),
                          hdt_exists: bool = Query(False),
                          hdt_path: str = Query('hdt/'),
-
                          ):
+    try:
+        kg_config = (await KGConfig.from_git()).get_by_repo(repo_id=action_model.repository_id)
+    except Exception as e:
+        slack_canary.send_slack_message(
+            f"⚠️ Failed to read registry config from {config.kg_config_url}, {str(e)}"
+        )
+        raise e
     slack_canary.notify_event(
         event_name="Merge to Main",
         repository=action_model.repository_id,
@@ -164,10 +169,10 @@ async def convert_to_hdt(action_model: LakefsMergeActionModel,
                               ephemeral=ephemeral,
                               java_opts=java_opts,
                               mem_size=mem_size,
-                              notify_email=notify_email,
                               convert_hdt=not hdt_exists,
                               hdt_path=hdt_path,
-                              kg_name=kg_name
+                              doc_path=kg_config.frink_options.documentation_path,
+                              kg_title=kg_config.title
                               )
     return "Started conversion, please check repo tag for uploads."
 
@@ -217,6 +222,7 @@ async def create_neo4j_HDT_conversion_task(action_model: LakefsMergeActionModel)
     create_neo4j_conversion_job.delay(action_model.dict(),
                                       files_list=neo4j_files,
                                       )
+
 
 @app.post("/validate_tag")
 async def validate_tag(action_model: LakefTagCreationModel):

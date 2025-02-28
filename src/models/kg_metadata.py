@@ -36,33 +36,11 @@ class KGConfig(BaseModel):
 
     @staticmethod
     async def from_git():
-        # async with aiohttp.ClientSession() as session:
-        #     response = await session.get(config.kg_config_url)
-        #     kgs = yaml.safe_load(await response.text())
-        #     return KGConfig(**kgs)
-        data = """
-        kgs:
-        - contact:
-            email: 'kebedey@renci.org'
-            github: ''
-            label: ''
-          description: The Urban Flooding Open Knowledge Network (UF-OKN) is an informational
-            infrastructure built using knowledge graphs aiming to extract structured content
-            from the information scattered across open-source geospatial datasets and hydrologic
-            models.
-          frink-options:
-            documentation-path: dream-kg
-            lakefs-repo: dream-kg
-          funding: https://www.nsf.gov/awardsearch/showAward?AWD_ID=2333726
-          homepage: https://ufokn.com
-          shortname: ufokn
-          sparql: https://frink.apps.renci.org/ufokn/sparql
-          template: overrides/kg.html
-          title: UF-OKN
-          tpf: https://frink.apps.renci.org/ldf/ufokn
-        """
-        kgs = yaml.safe_load(data)
-        return KGConfig(**kgs)
+        async with aiohttp.ClientSession() as session:
+            response = await session.get(config.kg_config_url)
+            kgs = yaml.safe_load(await response.text())
+            return KGConfig(**kgs)
+
 
 
     def __init__(self, **data):
@@ -87,6 +65,7 @@ if __name__ == "__main__":
 
     # Now you can lookup KG items by their lakefs_repo value
     print(config.get_by_repo("urban-flooding-open-knowledge-network"))
-    print(config.get_by_repo("biohealth"))
-    print(config.get_by_repo("dream-kg").contact.email)
+    bioheath = config.get_by_repo("biohealth")
+    print(config.get_by_repo("biohealth").frink_options)
+    # print(config.get_by_repo("dream-kg").contact.emil)
 

@@ -111,12 +111,7 @@ async def download_files(repo: str, branch: str, extensions: List = None):
             os.makedirs(base_dir)
         for file_name in all_files:
             suffixes = file_name.split('.')
-            if suffixes[-1] in extensions:
-                files_downloaded.append(file_name.lstrip('/'))
-                download_path = os.path.join(base_dir, file_name)
-                await download_file(file_name, repo, branch, download_path, session)
-                logger.info(f"Download {file_name} complete")
-            elif suffixes[-2] in extensions and suffixes[-1] in ["gz", "bz2"]:
+            if (suffixes[-1] in extensions or suffixes[-2] in extensions and suffixes[-1] in ["gz", "bz2"]):
                 files_downloaded.append(file_name.lstrip('/'))
                 download_path = os.path.join(base_dir, file_name)
                 await download_file(file_name, repo, branch, download_path, session)

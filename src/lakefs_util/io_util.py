@@ -110,7 +110,8 @@ async def download_files(repo: str, branch: str, extensions: List = None):
             logger.info(f"Directory {base_dir} does not exist; creating it ")
             os.makedirs(base_dir)
         for file_name in all_files:
-            if file_name.split('.')[-1] in extensions:
+            suffixes = file_name.split('.')
+            if (suffixes[-1] in extensions or suffixes[-2] in extensions and suffixes[-1] in ["gz", "bz2"]):
                 files_downloaded.append(file_name.lstrip('/'))
                 download_path = os.path.join(base_dir, file_name)
                 await download_file(file_name, repo, branch, download_path, session)

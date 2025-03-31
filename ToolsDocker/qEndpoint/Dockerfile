@@ -1,6 +1,6 @@
 FROM qacompany/qendpoint
 
-ARG QVERSION="1.16.1"
+ARG QVERSION="2.5.0"
 
 
 RUN apt-get update && apt-get install -y unzip python3
@@ -40,12 +40,6 @@ ENV PATH $PATH:/app/qendpoint-cli-${QVERSION}/bin/:/jena/bin
 RUN riot --version
 RUN rdf2hdt.sh --help
 
-RUN apt-get install python3-pip -y
-COPY ./requirements.txt /requirements.txt
-RUN python3 -m pip install -r /requirements.txt
-RUN rm -f /requirements.txt
-
-COPY process_graph.py /bin/process_graph.py
 
 COPY ./convert-all.sh /bin/convert-all.sh
 

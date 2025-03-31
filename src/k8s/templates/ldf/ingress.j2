@@ -16,7 +16,7 @@ spec:
   - host: {{ host_name }}
     http:
       paths:
-      - pathType: Prefix
+      - pathType: ImplementationSpecific
         path: "/ldf/(.*)"
         backend:
           service:

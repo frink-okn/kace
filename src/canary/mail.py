@@ -43,7 +43,7 @@ class MailCanary:
                 </div>
                 <div class="content">
                     If you have any questions or need assistance, please contact us at 
-                    <a href="mailto:frink-okn@renci.org">frink-okn@renci.org</a>.
+                    <a href="mailto:okn-frink@renci.org">okn-frink@renci.org</a>.
                 </div>
             </div>
         </body>
@@ -112,7 +112,7 @@ class MailCanary:
             query servers, and you will receive another notification once the deployment is complete.</p>
             
             <p>If you have any questions or need further assistance, please don't hesitate to reach out to 
-            <a href="mailto:frink-okn@renci.org">frink-okn@renci.org</a> .</p>
+            <a href="mailto:okn-frink@renci.org">okn-frink@renci.org</a> .</p>
         
             <p>Thank you for your cooperation!</p>
         

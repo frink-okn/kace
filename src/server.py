@@ -113,15 +113,20 @@ async def create_HDT_conversion_task(
         convert_hdt,
         hdt_path,
         doc_path,
-        kg_title
+        kg_title,
+        compressed
 ):
     if convert_hdt:
-        files = await download_files(repo=action_model.repository_id, branch=action_model.branch_id)
+        if not compressed:
+            files = await download_files(repo=action_model.repository_id, branch=action_model.branch_id)
+        else:
+            files = await download_files(repo=action_model.repository_id, branch=action_model.branch_id, extensions=[
+                "gz", "bz2"
+            ])
     else:
         files = await download_files(repo=action_model.repository_id, branch=action_model.branch_id, extensions=[
             'hdt'
         ])
-
 
     create_hdt_conversion_job.delay(action_model.dict(),
                                     files_list=files,
@@ -147,6 +152,7 @@ async def convert_to_hdt(action_model: LakefsMergeActionModel,
                          mem_size: str = Query("25G"),
                          hdt_exists: bool = Query(False),
                          hdt_path: str = Query('hdt/'),
+                         compressed: bool = Query(False)
                          ):
     try:
         kg_config = (await KGConfig.from_git()).get_by_repo(repo_id=action_model.repository_id)
@@ -172,7 +178,8 @@ async def convert_to_hdt(action_model: LakefsMergeActionModel,
                               convert_hdt=not hdt_exists,
                               hdt_path=hdt_path,
                               doc_path=kg_config.frink_options.documentation_path,
-                              kg_title=kg_config.title
+                              kg_title=kg_config.shortname,
+                              compressed=compressed
                               )
     return "Started conversion, please check repo tag for uploads."
 

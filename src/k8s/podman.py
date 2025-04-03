@@ -81,7 +81,9 @@ class JobMan:
         # override command and args
         logger.info("job man recieved job {} - {}".format(job_type, job_name))
         pod_template: kubernetes.client.V1PodSpec = job.spec.template.spec
-
+        # pod_template.containers[0].command = ["/bin/sh"]
+        # pod_template.containers[0].stdin_open = True
+        # pod_template.containers[0].tty = True
         if command:
             pod_template.containers[0].command = command
         if args:

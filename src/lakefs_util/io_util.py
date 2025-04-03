@@ -69,8 +69,7 @@ def clear_directory(path, delete_root=False):
 
 
 async def download_files(repo: str, branch: str, extensions: List = None):
-    if extensions is None:
-        extensions = [
+    rdf_extension = [
             "rdf",  # RDF/XML
             "xml",  # RDF/XML, TriX
             "ttl",  # Turtle
@@ -83,6 +82,11 @@ async def download_files(repo: str, branch: str, extensions: List = None):
             "trix",  # TriX
             "n3"  # N3
         ]
+    compression_extensions = [
+        "gz", "bz2"
+    ]
+    if extensions is None:
+        extensions = rdf_extension
     logger.info(f"Downloading {extensions} file types")
     cookie = await login_and_get_cookies(config.lakefs_url, config.lakefs_access_key, config.lakefs_secret_key)
     all_files = []
@@ -111,7 +115,12 @@ async def download_files(repo: str, branch: str, extensions: List = None):
             os.makedirs(base_dir)
         for file_name in all_files:
             suffixes = file_name.split('.')
-            if (suffixes[-1] in extensions or suffixes[-2] in extensions and suffixes[-1] in ["gz", "bz2"]):
+            if suffixes[-1] in extensions:
+                #validate if compression extensions
+                if suffixes[-1] in compression_extensions:
+                    if suffixes[-2] not in rdf_extension:
+                        logger.error(f"unsupported rdf based compression")
+                        raise Exception(f"Unsupported rdf based compression")
                 files_downloaded.append(file_name.lstrip('/'))
                 download_path = os.path.join(base_dir, file_name)
                 await download_file(file_name, repo, branch, download_path, session)

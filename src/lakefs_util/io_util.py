@@ -86,7 +86,9 @@ async def download_files(repo: str, branch: str, extensions: List = None):
         "gz", "bz2"
     ]
     if extensions is None:
-        extensions = rdf_extension
+        extensions = rdf_extension.copy()
+        for ext in compression_extensions:
+            extensions += [f"{x}.{ext}" for x in rdf_extension]
     logger.info(f"Downloading {extensions} file types")
     cookie = await login_and_get_cookies(config.lakefs_url, config.lakefs_access_key, config.lakefs_secret_key)
     all_files = []

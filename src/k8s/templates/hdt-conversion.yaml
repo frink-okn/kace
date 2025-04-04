@@ -1,4 +1,4 @@
-image: containers.renci.org/frink/qendpoint:v2.5.0_1
+image: containers.renci.org/frink/qendpoint:v2.5.0_2
 command:
   - /bin/convert-all.sh
 

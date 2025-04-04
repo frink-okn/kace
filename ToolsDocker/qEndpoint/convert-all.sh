@@ -52,15 +52,10 @@ echo "${FILES[@]}"
 
 # Process files: if a single file is provided, convert it to Turtle (if needed)
 # for compatibility with rdf2hdt.sh; otherwise merge the files.
-if [ "${#FILES[@]}" -eq 1 ]; then
-    echo "Single file provided. Converting to Turtle format if necessary."
-    INPUT_FILE="${FILES[0]}"
-else
-    echo "Multiple files provided. Merging files:"
-    echo "${FILES[@]}"
-    riot --merge --debug  --nocheck -v --output NT  ${FILES[@]} > ${RIOT_TMP_DIR}/combined.nt
-    INPUT_FILE=${RIOT_TMP_DIR}/combined.nt
-fi
+
+riot --merge --nocheck -v --output NT  ${FILES[@]} > ${RIOT_TMP_DIR}/combined.nt
+INPUT_FILE=${RIOT_TMP_DIR}/combined.nt
+
 
 echo "validating..."
 mkdir -p $REPORT_DIR

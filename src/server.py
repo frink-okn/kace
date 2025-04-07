@@ -114,13 +114,14 @@ async def create_HDT_conversion_task(
         hdt_path,
         doc_path,
         kg_title,
+        exclude_files=[]
 ):
     if convert_hdt:
-        files = await download_files(repo=action_model.repository_id, branch=action_model.branch_id)
+        files = await download_files(repo=action_model.repository_id, branch=action_model.branch_id, exclude_files=exclude_files)
     else:
         files = await download_files(repo=action_model.repository_id, branch=action_model.branch_id, extensions=[
             'hdt'
-        ])
+        ], exclude_files=exclude_files)
 
     create_hdt_conversion_job.delay(action_model.dict(),
                                     files_list=files,
@@ -146,7 +147,8 @@ async def convert_to_hdt(action_model: LakefsMergeActionModel,
                          mem_size: str = Query("25G"),
                          hdt_exists: bool = Query(False),
                          hdt_path: str = Query('hdt/'),
-                         compressed: bool = Query(False)
+                         compressed: bool = Query(False),
+                         exclude_files: str=Query("")
                          ):
     try:
         kg_config = (await KGConfig.from_git()).get_by_repo(repo_id=action_model.repository_id)
@@ -172,7 +174,8 @@ async def convert_to_hdt(action_model: LakefsMergeActionModel,
                               convert_hdt=not hdt_exists,
                               hdt_path=hdt_path,
                               doc_path=kg_config.frink_options.documentation_path,
-                              kg_title=kg_config.shortname
+                              kg_title=kg_config.shortname,
+                              exclude_files=[x.strip() for x in exclude_files.split(",")]
                               )
     return "Started conversion, please check repo tag for uploads."
 

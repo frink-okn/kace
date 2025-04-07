@@ -68,7 +68,7 @@ def clear_directory(path, delete_root=False):
             print(f"Warning: An error occurred while deleting the root directory '{path}': {e}. Skipping...")
 
 
-async def download_files(repo: str, branch: str, extensions: List = None):
+async def download_files(repo: str, branch: str, extensions: List = None, exclude_files: List = None):
     rdf_extension = [
             "rdf",  # RDF/XML
             "xml",  # RDF/XML, TriX
@@ -89,6 +89,7 @@ async def download_files(repo: str, branch: str, extensions: List = None):
         extensions = rdf_extension.copy()
         for ext in compression_extensions:
             extensions += [f"{x}.{ext}" for x in rdf_extension]
+        extensions += compression_extensions
     logger.info(f"Downloading {extensions} file types")
     cookie = await login_and_get_cookies(config.lakefs_url, config.lakefs_access_key, config.lakefs_secret_key)
     all_files = []
@@ -116,6 +117,9 @@ async def download_files(repo: str, branch: str, extensions: List = None):
             logger.info(f"Directory {base_dir} does not exist; creating it ")
             os.makedirs(base_dir)
         for file_name in all_files:
+            if file_name in exclude_files:
+                logger.info(f"Skipping {file_name}")
+                continue
             suffixes = file_name.split('.')
             if suffixes[-1] in extensions:
                 #validate if compression extensions

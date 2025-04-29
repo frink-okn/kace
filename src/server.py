@@ -199,12 +199,18 @@ async def handle_tag_creation(background_tasks: BackgroundTasks,
     return f"Started deployment, anticipated address {config.frink_address}/{kg_name}/sparql"
 
 
-async def create_deployment_task(kg_name: str, cpu: str, memory: str, hdt_path: str, action_model: LakefTagCreationModel,
-                                 notify_email: str):
-    await download_hdt_files(repo=action_model.repository_id, branch=action_model.tag_id, kg_name=kg_name,
+async def create_deployment_task(cpu: str, memory: str, hdt_path: str, action_model: LakefTagCreationModel):
+    try:
+        kg_config = (await KGConfig.from_git()).get_by_repo(repo_id=action_model.repository_id)
+    except Exception as e:
+        slack_canary.send_slack_message(
+            f"⚠️ Failed to read registry config from {config.kg_config_url}, {str(e)}"
+        )
+        raise e
+    await download_hdt_files(repo=action_model.repository_id, branch=action_model.tag_id, kg_name=kg_config.shortname,
                              hdt_path=hdt_path)
-    create_deployment.delay(kg_name=kg_name, cpu=cpu, memory=memory, lakefs_action=action_model.dict(),
-                            notify_email=notify_email)
+    create_deployment.delay(kg_name=kg_config.shortname, cpu=cpu, memory=memory, lakefs_action=action_model.dict(),
+                            notify_email=kg_config.contact.email)
 
 
 @app.post("/convert_neo4j_to_hdt")

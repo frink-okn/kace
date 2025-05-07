@@ -3,7 +3,7 @@ from k8s.podman import JobMan
 from k8s.server_man import fuseki_server_manager, federation_server_manager, ldf_server_manager
 from models.lakefs_models import LakefsMergeActionModel, LakefTagCreationModel
 from models.kg_metadata import KGConfig
-from lakefs_util.io_util import resolve_commit, upload_files
+from lakefs_util.io_util import resolve_commit
 from log_util import LoggingUtil
 from config import config
 import os
@@ -39,7 +39,7 @@ def create_hdt_conversion_job(action_payload,
     lakefs_payload = LakefsMergeActionModel(**action_payload)
     job = JobMan()
     logger.info(lakefs_payload)
-    job_name = f'{lakefs_payload.hook_id}-{lakefs_payload.repository_id[:10]}-{lakefs_payload.branch_id}-{lakefs_payload.commit_id[:10]}'
+    job_name = f'{lakefs_payload.hook_id}-{lakefs_payload.repository_id[:10]}-{lakefs_payload.branch_id.replace("_","-")[:10]}-{lakefs_payload.commit_id[:10]}'
     logger.info(f"Running as user: {os.getuid()}")
 
     working_dir = str(os.path.join("/mnt/repo", lakefs_payload.repository_id, lakefs_payload.branch_id))
@@ -113,19 +113,47 @@ app.conf.update(
 
 @app.task(ignore_result=True)
 @slack_canary.slack_notify_on_failure("⚠️ Neo4j to RDF fail")
-def create_neo4j_conversion_job(action_payload, files_list):
+def create_neo4j_conversion_job(action_payload, dump_files_list, rdf_mapping_config):
     lakefs_payload = LakefsMergeActionModel(**action_payload)
     job = JobMan()
     logger.info(lakefs_payload)
-    job_name = f'{lakefs_payload.hook_id}-{lakefs_payload.repository_id[:10]}-{lakefs_payload.branch_id}-{lakefs_payload.commit_id[:10]}'
-
-    logger.info(f'Job name: {job_name}')
+    json_job_name = f'{lakefs_payload.hook_id}-{lakefs_payload.repository_id[:10]}-{lakefs_payload.branch_id}-{lakefs_payload.commit_id[:10]}-to-json'
+    rdf_job_name = f'{lakefs_payload.hook_id}-{lakefs_payload.repository_id[:10]}-{lakefs_payload.branch_id}-{lakefs_payload.commit_id[:10]}-to-rdf'
+    working_dir = os.path.join("/mnt/repo", lakefs_payload.repository_id, lakefs_payload.branch_id)
+    logger.info(f'Job name: {json_job_name}')
     # report the job id back ...
-    job.run_job(job_type="noe4j-rdf-job",
-                job_name=job_name,
+    job.run_job(job_type="neo4j-json-job",
+                job_name=json_job_name,
                 repo=lakefs_payload.repository_id,
                 branch=lakefs_payload.branch_id,
-                args=files_list,
+                args=dump_files_list,
+
+                resources={
+                    "limits": {
+                        "cpu": 3,
+                        "memory": "20Gi"
+                    }
+                },
+                env_vars={
+                    "JAVA_OPTIONS": "-Xmx20G -XX:+UseParallelGC",
+                    "WORKING_DIR": working_dir
+                })
+    job.watch_job(job_name=json_job_name)
+    logger.info(f'Job {rdf_job_name} finished.')
+    neo4j_export_json_location = working_dir + "/neo4j-export/neo4j-apoc-export.json"
+
+    job.run_job(job_type="neo4j-rdf-job",
+                job_name=rdf_job_name,
+                repo=lakefs_payload.repository_id,
+                branch=lakefs_payload.branch_id,
+                args=[
+                    "-i",
+                    neo4j_export_json_location,
+                    "-c",
+                    rdf_mapping_config,
+                    "-o",
+                    working_dir + "/graph.nt"
+                ],
                 resources={
                     "limits": {
                         "cpu": 3,
@@ -136,8 +164,8 @@ def create_neo4j_conversion_job(action_payload, files_list):
                     "JAVA_OPTIONS": "-Xmx20G -XX:+UseParallelGC",
                     "WORKING_DIR": os.path.join("/mnt/repo", lakefs_payload.repository_id, lakefs_payload.branch_id)
                 })
-    job.watch_job(job_name=job_name)
-    logger.info(f'Job {job_name} finished.')
+    job.watch_job(job_name=rdf_job_name)
+    logger.info(f'Job {rdf_job_name} finished.')
     requests.post(config.neo4j_upload_callback_url, json=action_payload)
 
 
@@ -153,10 +181,10 @@ def create_deployment(kg_name: str, cpu: str, memory: str, lakefs_action, notify
         "commit": lakefs_action.commit_id
     }
     resources = {
-            "limits": {
-                "memory": memory,
-            }
+        "limits": {
+            "memory": memory,
         }
+    }
     if cpu:
         resources["limits"]["cpu"] = cpu
     # Create fuseki server
@@ -169,7 +197,7 @@ def create_deployment(kg_name: str, cpu: str, memory: str, lakefs_action, notify
     )
     retries = 10
     server_up = fuseki_server_manager.wait_for_services_to_be_running(parameters={
-            "kg_name": kg_name
+        "kg_name": kg_name
     }, annotations=annotations, max_retries=retries)
     if not server_up:
         raise Exception(f"Fuseki deployment for {kg_name} - version: {lakefs_action.tag_id} failed. Deployment "
@@ -193,13 +221,12 @@ def create_deployment(kg_name: str, cpu: str, memory: str, lakefs_action, notify
                                          annotations=annotations,
                                          # Use default resources in the template
                                          resources=None
-    )
+                                         )
     logger.info(f'updated federation server deployment')
+    job_name = f'spider-cl-{kg_name}-{lakefs_action.commit_id[:10]}'
     try:
         job = JobMan()
         logger.info(f"creating spider client job")
-
-        job_name = f'spider-cl-{kg_name}-{lakefs_action.commit_id[:10]}'
         commit_data = resolve_commit(lakefs_action.repository_id, lakefs_action.source_ref)
         logger.info(f'Job name: {job_name}')
         # report the job id back ...
@@ -222,7 +249,6 @@ def create_deployment(kg_name: str, cpu: str, memory: str, lakefs_action, notify
                     )
         job.watch_job(job_name=job_name)
         logger.info(f'Job {job_name} finished.')
-        # requests.post(config.hdt_upload_callback_url, json=action_payload)
     except Exception as e:
         logger.exception(f'Spider Job failed {job_name} : {str(e)}')
     kg_config = asyncio.run(KGConfig.from_git()).get_by_repo(lakefs_action.repository_id)

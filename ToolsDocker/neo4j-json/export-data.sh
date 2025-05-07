@@ -10,6 +10,10 @@ readonly LOG_FILE="${DATADIR}/neo4j-logs/conversion.log"
 readonly MAX_RETRIES=3
 readonly STARTUP_TIMEOUT=60  # seconds
 
+export NEO4J_server_directories_data="${WORKING_DIR}/neo4j-data"
+export NEO4J_server_directories_logs="${WORKING_DIR}/neo4j-logs"
+export NEO4J_server_directories_transaction_logs_root="${WORKING_DIR}/neo4j-data/transactions"
+
 # Logging functions
 log() {
     local timestamp
@@ -52,7 +56,7 @@ cleanup() {
 
 # Create directories with proper permissions
 setup_directories() {
-    local dirs=("neo4j-data" "neo4j-logs" "neo4j-export")
+    local dirs=("neo4j-export")
 
     for dir in "${dirs[@]}"; do
         local full_path="${DATADIR}/${dir}"
@@ -130,7 +134,7 @@ main() {
     fi
 
 
-    nohup /startup/docker-entrypoint.sh neo4j start > "${DATADIR}/neo4j-logs/startup.log" 2>&1 &
+    nohup /startup/docker-entrypoint.sh neo4j start &
 
     # Wait for Neo4j to start
     if ! wait_for_neo4j "${STARTUP_TIMEOUT}"; then
@@ -150,6 +154,7 @@ main() {
     echo "loading"
     ls -alh ${WORK_DIR}/neo4j.dump
     neo4j-admin database load --from-path="${WORK_DIR}/" --overwrite-destination=true neo4j
+    neo4j-admin database migrate neo4j
     sleep 1
     chmod 777 -R ${DATADIR}/neo4j-data
     du -h ${DATADIR}/neo4j-data
@@ -158,7 +163,7 @@ main() {
 
     # Start Neo4j
     log "Starting Neo4j..."
-    nohup /startup/docker-entrypoint.sh neo4j start > "${DATADIR}/neo4j-logs/startup.log" 2>&1 &
+    nohup /startup/docker-entrypoint.sh neo4j start &
 
     # Wait for Neo4j to start
     if ! wait_for_neo4j "${STARTUP_TIMEOUT}"; then
@@ -188,71 +193,12 @@ main() {
     fi
 
     # Final cleanup
-#    cleanup
+    cleanup
+
+    rm -rf ${WORK_DIR}
 
     log "Conversion completed successfully"
 }
 
 # Run main function
 main "$@"
-
-
-
-
-##!/bin/bash
-#
-#set -e
-#
-#DATADIR=/mnt/repo
-#
-## check and continue if only a single reference
-## remove old data
-#cleanup() {
-#  rm -rf ${DATADIR}/neo4j-data
-#}
-#
-#cleanup
-#
-#
-#if [ "$#" -ne 1 ]; then
-#    echo "Script expects single neo4j dump file"
-#    exit 1
-#fi
-#
-## setup loading dir with data
-#
-#FILE_TO_CONVERT=$@
-#WORK_DIR="${DATADIR}/work-dir"
-#
-#rm -rf $WORK_DIR
-#mkdir -p $WORK_DIR
-#cp $DATADIR/${FILE_TO_CONVERT} $WORK_DIR/neo4j.dump
-#
-#mkdir -p ${DATADIR}/neo4j-data
-#chmod 777 -R ${DATADIR}/neo4j-data
-#mkdir -p ${DATADIR}/neo4j-logs
-#chmod 777 -R ${DATADIR}/neo4j-logs
-#mkdir -p ${DATADIR}/neo4j-export
-#chmod 777 -R ${DATADIR}/neo4j-export
-#
-#
-## load to database
-#neo4j-admin database load neo4j --from-path=$WORK_DIR --overwrite-destination=true
-#chmod 777 -R ${DATADIR}/neo4j-data
-#
-## start neo4j
-#nohup /startup/docker-entrypoint.sh neo4j start > ${DATADIR}/neo4j-logs/startup.log &
-#
-#
-#sleep 30
-#
-#
-#
-#echo "CALL apoc.export.json.all(\"${DATADIR}/neo4j-export/neo4j-apoc-export.json\",{jsonFormat:\"JSON_LINES\",writeNodeProperties:true});" | cypher-shell --format plain > ${DATADIR}/neo4j-export/stats.txt
-#
-## stop neo4j
-#neo4j stop
-#
-## clean up data dir
-#cleanup
-#

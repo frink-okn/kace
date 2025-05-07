@@ -53,7 +53,7 @@ echo "${FILES[@]}"
 # Process files: if a single file is provided, convert it to Turtle (if needed)
 # for compatibility with rdf2hdt.sh; otherwise merge the files.
 
-riot --merge -v --output NT  ${FILES[@]} > ${RIOT_TMP_DIR}/combined.nt
+riot --merge --nocheck -v --output NT  ${FILES[@]} > ${RIOT_TMP_DIR}/combined.nt
 INPUT_FILE=${RIOT_TMP_DIR}/combined.nt
 
 

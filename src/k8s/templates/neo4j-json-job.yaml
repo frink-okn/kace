@@ -1,0 +1,3 @@
+image: containers.renci.org/frink/neo4j-rdf:5.22.0
+command:
+  - /scripts/export-data.sh

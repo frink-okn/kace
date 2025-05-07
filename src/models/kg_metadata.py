@@ -14,6 +14,7 @@ class Contact(BaseModel):
 class FrinkOptions(BaseModel):
     documentation_path: Optional[str] = Field(alias="documentation-path")
     lakefs_repo: Optional[str] = Field(alias="lakefs-repo")
+    neo4j_conversion_config_path: Optional[str] = Field(alias="neo4j-conversion-config-path", default="")
 
 # Define a model for each KG item
 class KG(BaseModel):

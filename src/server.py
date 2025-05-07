@@ -77,9 +77,9 @@ async def upload_hdt_callback(action_model: LakefsMergeActionModel,
 
 
 @app.post('/upload_neo4j_files')
-async def upload_neo4j_files(action_model: LakefsMergeActionModel):
+async def upload_neo4j_files(action_model: LakefsMergeActionModel, background_tasks: BackgroundTasks):
     neo4j_location = config.local_data_dir + '/' + action_model.repository_id + '/' + action_model.branch_id + '/neo4j-export'
-    logs_location = config.local_data_dir + '/' + action_model.repository_id + '/' + action_model.branch_id + '/neo4j-logs'
+    nt_location = config.local_data_dir + '/' + action_model.repository_id + '/' + action_model.branch_id + '/graph.nt'
     try:
         stable_branch_name = await upload_files(
             repo=action_model.repository_id,
@@ -87,16 +87,37 @@ async def upload_neo4j_files(action_model: LakefsMergeActionModel):
             local_files=[
                 (f'{neo4j_location}/neo4j-apoc-export.json', 'neo4j-export'),
                 (f'{neo4j_location}/stats.txt', 'neo4j-export'),
+                (nt_location, 'rdf-result')
 
             ]
         )
-        slack_canary.notify_slack(
+        slack_canary.notify_event(
             "✔️ Neo4j dump has been converted",
             repository=action_model.repository_id,
             **stable_branch_name
         )
-        # @TODO This needs to fire off rdf-hdt conversion once complete.
-    except Exception as e :
+        try:
+            kg_config = (await KGConfig.from_git()).get_by_repo(repo_id=action_model.repository_id)
+        except Exception as e:
+            slack_canary.send_slack_message(
+                f"⚠️ Failed to read registry config from {config.kg_config_url}, {str(e)}"
+            )
+            raise e
+        action_model.branch_id = stable_branch_name['stable_branch_name']
+        background_tasks.add_task(create_HDT_conversion_task,
+                                  action_model,
+                                  doc_path=kg_config.frink_options.documentation_path,
+                                  kg_title=kg_config.shortname,
+                                  cpu=3,
+                                  memory="28Gi",
+                                  ephemeral="2Gi",
+                                  java_opts="-Xmx25G -Xms25G -Xss512m -XX:+UseParallelGC",
+                                  mem_size="25G",
+                                  convert_hdt=True,
+                                  hdt_path="/",
+                                  exclude_files=["neo4j-export/neo4j-apoc-export.json"])
+
+    except Exception as e:
         slack_canary.notify_event("⚠️ Neo4j rdf file upload failed.",
                                   repository_id=action_model.repository_id,
                                   branch_id=action_model.branch_id,
@@ -203,7 +224,7 @@ async def create_deployment_task(cpu: str, memory: str, hdt_path: str, action_mo
     try:
         kg_config = (await KGConfig.from_git()).get_by_repo(repo_id=action_model.repository_id)
     except Exception as e:
-        slack_canary.send_slack_message(
+        slack_canary.send_message(
             f"⚠️ Failed to read registry config from {config.kg_config_url}, {str(e)}"
         )
         raise e
@@ -227,9 +248,19 @@ async def convert_neo4j_to_hdt(action_model: LakefsMergeActionModel, background_
 
 
 async def create_neo4j_HDT_conversion_task(action_model: LakefsMergeActionModel):
-    neo4j_files = await download_files(action_model.repository_id, branch=action_model.branch_id, extensions=['dump'])
+    neo4j_files = await download_files(action_model.repository_id, branch=action_model.branch_id, extensions=['dump']
+                                       )
+    try:
+        kg_config = (await KGConfig.from_git()).get_by_repo(repo_id=action_model.repository_id)
+    except Exception as e:
+        slack_canary.send_message(
+            f"⚠️ Failed to read registry config from {config.kg_config_url}, {str(e)}"
+        )
+        raise e
+
     create_neo4j_conversion_job.delay(action_model.dict(),
-                                      files_list=neo4j_files,
+                                      dump_files_list=neo4j_files,
+                                      rdf_mapping_config=kg_config.frink_options.neo4j_conversion_config_path
                                       )
 
 

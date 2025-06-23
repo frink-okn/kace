@@ -175,7 +175,7 @@ data:
         {
           "@id": "urn:ldf-server:biohealthDatasource",
           "@type": "HdtDatasource",
-          "datasourceTitle": "geoconnex",
+          "datasourceTitle": "biohealth",
           "description": "Biohealth Triple Pattern Fragments endpoint",
           "datasourcePath": "biohealth",
           "hdtFile": "/data/deploy/biohealth.hdt"
@@ -183,11 +183,19 @@ data:
         {
           "@id": "urn:ldf-server:nasagesdesckgDatasource",
           "@type": "HdtDatasource",
-          "datasourceTitle": "nasagesdesckg",
+          "datasourceTitle": "NASA-GESDISC-KG",
           "description": "NASA Gesdesc Triple Pattern Fragments endpoint",
-          "datasourcePath": "nasa-gesdesc-kg",
-          "hdtFile": "/data/deploy/nasa-gesdesc-kg.hdt"
+          "datasourcePath": "nasa-gesdisc-kg",
+          "hdtFile": "/data/deploy/nasa-gesdisc-kg.hdt"
         },
+        {
+          "@id": "urn:ldf-server:identifiermappingsDatasource",
+          "@type": "HdtDatasource",
+          "datasourceTitle": "identifiermappings",
+          "description": "Mappings using standard RDF predicates between Wikidata entities and external identifiers represented as RDF IRIs",
+          "datasourcePath": "identifier-mappings",
+          "hdtFile": "/data/deploy/identifier-mappings.hdt"
+        }
 
       ]
     }

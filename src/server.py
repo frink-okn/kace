@@ -207,10 +207,9 @@ async def handle_tag_creation(background_tasks: BackgroundTasks,
                               cpu: str = Query(None),
                               memory: str = Query(None),
                               hdt_path: str = Query('hdt/'),
-                              notify_email: str = Query(''),
                               action_model: LakefTagCreationModel=Body(...)
                               ):
-    background_tasks.add_task(create_deployment_task, kg_name, cpu, memory, hdt_path, action_model, notify_email)
+    background_tasks.add_task(create_deployment_task, cpu, memory, hdt_path, action_model)
     slack_canary.notify_event(
         event_name="Tag is created , proceeding to deployment",
         repository=action_model.repository_id,

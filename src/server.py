@@ -4,7 +4,7 @@ from http.client import HTTPException
 import uvicorn
 from fastapi import FastAPI, BackgroundTasks, Query, Body
 from models.lakefs_models import LakefsMergeActionModel, LakefTagCreationModel
-from models.kg_metadata import KGConfig
+from models.kg_metadata import KGConfig, KG
 from celery_tasks.celery import create_hdt_conversion_job, create_deployment, create_neo4j_conversion_job
 from lakefs_util.io_util import download_files, upload_files, download_hdt_files, open_file_with_retry
 from config import config
@@ -209,7 +209,9 @@ async def handle_tag_creation(background_tasks: BackgroundTasks,
                               hdt_path: str = Query('hdt/'),
                               action_model: LakefTagCreationModel=Body(...)
                               ):
-    background_tasks.add_task(create_deployment_task, cpu, memory, hdt_path, action_model)
+    kg_config = (await KGConfig.from_git()).get_by_repo(action_model.repository_id)
+    kg_name = kg_config.shortname
+    background_tasks.add_task(create_deployment_task, cpu, memory, hdt_path, action_model, kg_config)
     slack_canary.notify_event(
         event_name="Tag is created , proceeding to deployment",
         repository=action_model.repository_id,
@@ -219,18 +221,10 @@ async def handle_tag_creation(background_tasks: BackgroundTasks,
     return f"Started deployment, anticipated address {config.frink_address}/{kg_name}/sparql"
 
 
-async def create_deployment_task(cpu: str, memory: str, hdt_path: str, action_model: LakefTagCreationModel):
-    try:
-        kg_config = (await KGConfig.from_git()).get_by_repo(repo_id=action_model.repository_id)
-    except Exception as e:
-        slack_canary.send_message(
-            f"⚠️ Failed to read registry config from {config.kg_config_url}, {str(e)}"
-        )
-        raise e
+async def create_deployment_task(cpu: str, memory: str, hdt_path: str, action_model: LakefTagCreationModel, kg_config: KG):
     await download_hdt_files(repo=action_model.repository_id, branch=action_model.tag_id, kg_name=kg_config.shortname,
                              hdt_path=hdt_path)
-    create_deployment.delay(kg_name=kg_config.shortname, cpu=cpu, memory=memory, lakefs_action=action_model.dict(),
-                            notify_email=kg_config.contact.email)
+    create_deployment.delay(kg_config=kg_config, cpu=cpu, memory=memory, lakefs_action=action_model.dict())
 
 
 @app.post("/convert_neo4j_to_hdt")

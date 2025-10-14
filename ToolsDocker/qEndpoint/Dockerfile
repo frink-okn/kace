@@ -1,14 +1,14 @@
 FROM qacompany/qendpoint
 
-ARG QVERSION="2.5.0"
+ARG QVERSION="2.5.2"
 
 
-RUN apt-get update && apt-get install -y unzip python3
+RUN apt-get update && apt-get install -y unzip python3 curl
 
 WORKDIR /app
 
-RUN wget https://github.com/the-qa-company/qEndpoint/releases/download/v${QVERSION}/qendpoint-cli.zip
-
+#RUN wget https://github.com/the-qa-company/qEndpoint/releases/download/v${QVERSION}/qendpoint-cli.zip
+COPY ./qendpoint-cli-2.5.2-distribution.zip ./qendpoint-cli.zip
 RUN unzip qendpoint-cli.zip
 
 

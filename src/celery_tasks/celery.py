@@ -54,6 +54,11 @@ def create_hdt_conversion_job(action_payload,
                     branch=lakefs_payload.branch_id,
                     args=files_list,
                     resources={
+                        "requests": {
+                            "cpu": cpu,
+                            "memory": memory,
+                            "ephemeral-storage": ephemeral
+                        },
                         "limits": {
                             "cpu": cpu,
                             "memory": memory,
@@ -61,9 +66,13 @@ def create_hdt_conversion_job(action_payload,
                         }
                     },
                     env_vars={
+                        "GH_TOKEN": config.gh_token,
                         "JAVA_OPTIONS": java_opts,
                         "MEM_SIZE": mem_size,
-                        "WORKING_DIR": working_dir
+                        "WORKING_DIR": working_dir,
+                        "REPO_NAME": lakefs_payload.repository_id,
+                        "COMMIT_ID": lakefs_payload.source_ref,
+                        "KG_NAME": kg_title,
                     })
         job.watch_job(job_name=job_name)
         logger.info(f'Job {job_name} finished.')
@@ -91,6 +100,11 @@ def create_hdt_conversion_job(action_payload,
         repo=lakefs_payload.repository_id,
         branch=lakefs_payload.branch_id,
         resources={
+            "requests": {
+                "cpu": cpu,
+                "memory": memory,
+                "ephemeral-storage": ephemeral
+            },
             "limits": {
                 "cpu": cpu,
                 "memory": memory,
@@ -113,7 +127,20 @@ app.conf.update(
 
 @app.task(ignore_result=True)
 @slack_canary.slack_notify_on_failure("⚠️ Neo4j to RDF fail")
-def create_neo4j_conversion_job(action_payload, dump_files_list, rdf_mapping_config):
+def create_neo4j_conversion_job(action_payload,
+                                dump_files_list,
+                                json_dump_files_list,
+                                rdf_mapping_config):
+    """
+    Converts Neo4j dump files to ttl based on a mapping config. The mapping config is expected to be defined
+    in the KG registry file. It works by converting dump files to json exports then to rdf (.nt) formatted file.
+    If json exports are available it skips the first dump to json job.
+    :param action_payload: Lakefs action payload
+    :param dump_files_list: List of files with .dump
+    :param json_dump_files_list:  list of neo4j json exports.
+    :param rdf_mapping_config:
+    :return:
+    """
     lakefs_payload = LakefsMergeActionModel(**action_payload)
     job = JobMan()
     logger.info(lakefs_payload)
@@ -121,26 +148,32 @@ def create_neo4j_conversion_job(action_payload, dump_files_list, rdf_mapping_con
     rdf_job_name = f'{lakefs_payload.hook_id}-{lakefs_payload.repository_id[:10]}-{lakefs_payload.branch_id}-{lakefs_payload.commit_id[:10]}-to-rdf'
     working_dir = os.path.join("/mnt/repo", lakefs_payload.repository_id, lakefs_payload.branch_id)
     logger.info(f'Job name: {json_job_name}')
-    # report the job id back ...
-    job.run_job(job_type="neo4j-json-job",
-                job_name=json_job_name,
-                repo=lakefs_payload.repository_id,
-                branch=lakefs_payload.branch_id,
-                args=dump_files_list,
+    json_dump_files_list = json_dump_files_list or []
 
-                resources={
-                    "limits": {
-                        "cpu": 3,
-                        "memory": "20Gi"
-                    }
-                },
-                env_vars={
-                    "JAVA_OPTIONS": "-Xmx20G -XX:+UseParallelGC",
-                    "WORKING_DIR": working_dir
-                })
-    job.watch_job(job_name=json_job_name)
-    logger.info(f'Job {rdf_job_name} finished.')
-    neo4j_export_json_location = working_dir + "/neo4j-export/neo4j-apoc-export.json"
+    if not len(json_dump_files_list):
+        # Run dump to json conversion iff the repository contains just dump files.
+        logger.info("creating a neo4j to json conversion job...")
+        job.run_job(job_type="neo4j-json-job",
+                    job_name=json_job_name,
+                    repo=lakefs_payload.repository_id,
+                    branch=lakefs_payload.branch_id,
+                    args=dump_files_list,
+                    resources={
+                        "limits": {
+                            "cpu": 3,
+                            "memory": "20Gi"
+                        }
+                    },
+                    env_vars={
+                        "JAVA_OPTIONS": "-Xmx20G -XX:+UseParallelGC",
+                        "WORKING_DIR": working_dir
+                    })
+        job.watch_job(job_name=json_job_name)
+        logger.info(f'Job {rdf_job_name} finished.')
+        source_files = "neo4j-export/neo4j-apoc-export.json"
+    else:
+        source_files = json_dump_files_list[0]
+    neo4j_export_json_location = working_dir.rstrip('/') + '/' + source_files.lstrip('/')
 
     job.run_job(job_type="neo4j-rdf-job",
                 job_name=rdf_job_name,
@@ -151,8 +184,8 @@ def create_neo4j_conversion_job(action_payload, dump_files_list, rdf_mapping_con
                     neo4j_export_json_location,
                     "-c",
                     rdf_mapping_config,
-                    "-o",
-                    working_dir + "/graph.nt"
+                    "-w",
+                    working_dir
                 ],
                 resources={
                     "limits": {
@@ -166,13 +199,15 @@ def create_neo4j_conversion_job(action_payload, dump_files_list, rdf_mapping_con
                 })
     job.watch_job(job_name=rdf_job_name)
     logger.info(f'Job {rdf_job_name} finished.')
+    # @todo send source files back to the callback to let it ignore them .
     requests.post(config.neo4j_upload_callback_url, json=action_payload)
 
 
 @app.task(ignore_result=True)
 @slack_canary.slack_notify_on_failure("⚠️ Deployment Error")
-def create_deployment(kg_config: KG, cpu: str, memory: str, lakefs_action):
+def create_deployment(kg_config: dict, cpu: str, memory: str, lakefs_action):
     lakefs_action: LakefTagCreationModel = LakefTagCreationModel(**lakefs_action)
+    kg_config: KG = KG(**kg_config)
     # this will be given to the pod. So if version changes pod is restarted :)
     kg_name = kg_config.shortname
     annotations = {
@@ -182,6 +217,9 @@ def create_deployment(kg_config: KG, cpu: str, memory: str, lakefs_action):
         "commit": lakefs_action.commit_id
     }
     resources = {
+        "requests": {
+            "memory": memory,
+        },
         "limits": {
             "memory": memory,
         }

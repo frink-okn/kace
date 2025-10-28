@@ -16,6 +16,9 @@ REPORT_DIR=${REPORT_DIR:-${WORKING_DIR}/report}
 JAVATMP_DIR=${JAVATMP_DIR:-${WORKING_DIR}/java-temp}
 RIOT_BIN=${RIOT_BIN:-riot}
 KEEP_TEMP=${KEEP_TEMP:-0}
+REPO_NAME=${REPO_NAME:-'Unknown'}
+COMMIT_ID=${COMMIT_ID:-""}
+KG_NAME=${KG_NAME:-""}
 
 JAVA_OPTIONS="${JAVA_OPTIONS:-} -Djava.io.tmpdir=${JAVATMP_DIR}"
 export JAVA_OPTIONS
@@ -39,7 +42,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-log() { printf '%s %s\n' "$(date --iso-8601=seconds)" "$*"; }
+log() { printf '%s %s\n' "$(date --iso-8601=seconds)" "$*" >&2; }
 err_and_exit() { echo "$*" >&2; echo "$(date --iso-8601=seconds) - $*" >> "${FAILURES_LOG}"; exit 1; }
 
 # --- File detection ---
@@ -93,6 +96,7 @@ log "Text files: ${#TEXT_FILES[@]} HDT files: ${#HDT_FILES[@]}"
 # --- Helper funcs ---
 merge_text_to_nt() {
     local out_nt="${RIOT_TMP_DIR}/combined_text.nt"
+    log "TEXT_FILES count=${#TEXT_FILES[@]}, content='${TEXT_FILES[*]}'"
     [ ${#TEXT_FILES[@]} -eq 0 ] && return 0
 
     log "Merging ${#TEXT_FILES[@]} RDF text files..."
@@ -111,18 +115,46 @@ merge_text_to_nt() {
     echo "${out_nt}"
 }
 
-# FIX: Add proper error checking
 validate_nt() {
     local ntfile="$1"
+    local repo="frink-okn/graph-coordination"
+    local title="Validation failed for ${ntfile}"
+    local body_file="/tmp/gh_issue_body.txt"
+
     log "Validating ${ntfile}"
-    if ! ${RIOT_BIN} --validate --check --strict --sink "${ntfile}" > "${VALIDATE_LOG}" 2>&1; then
-        log "ERROR: Validation failed for ${ntfile}"
+
+    # Run validation and capture output
+    ${RIOT_BIN} --validate --check --strict --sink "${ntfile}" > "${VALIDATE_LOG}" 2>&1
+
+    # If output contains "ERROR" (case-insensitive), fail and create GitHub issue
+    if grep -iq "error" "${VALIDATE_LOG}"; then
+        log "ERROR: Validation failed for ${KG_NAME}"
+
+        # Create issue body
+        {
+            echo "Validation failed for ${REPO_NAME}  commit: ${COMMIT_ID} "
+            echo
+            echo "### Error Log"
+            echo '```'
+            cat "${VALIDATE_LOG}"
+            echo '```'
+            echo
+            echo "_This issue was automatically created by the validation script._"
+        } > "${body_file}"
+
+        # Create GitHub issue
+        gh issue create \
+            --title "${title}" \
+            --body-file "${body_file}" \
+            --label "graph-validation" \
+            --repo "${repo}"
+
         return 1
     fi
-    log "Validation passed for ${ntfile}"
+
+    log "Validation passed for ${ntfile} (warnings ignored)"
 }
 
-# FIX: Add existence check after conversion
 nt_to_hdt() {
     local ntfile="$1"
     local outdir="$2"
@@ -269,10 +301,10 @@ if [ ${#TEXT_FILES[@]} -eq 0 ] && [ ${#HDT_FILES[@]} -gt 0 ]; then
 fi
 
 # Path 2: Only text files
+# Path 2: Only text files
 if [ ${#TEXT_FILES[@]} -gt 0 ] && [ ${#HDT_FILES[@]} -eq 0 ]; then
     log "=== Text-only path ==="
     text_nt=$(merge_text_to_nt || true)
-
     # FIX: Better empty check
     if [ -z "${text_nt:-}" ] || [ ! -s "${text_nt:-}" ]; then
         log "No valid text triples found, nothing to convert."
@@ -283,8 +315,13 @@ if [ ${#TEXT_FILES[@]} -gt 0 ] && [ ${#HDT_FILES[@]} -eq 0 ]; then
         err_and_exit "Validation failed for ${text_nt}"
     fi
 
-    nt_to_hdt "${text_nt}" "${HDT_FINAL_DIR}"
-    mv "${HDT_FINAL_DIR}/graph.hdt" "${final_hdt}"
+    # FIX: Use temp directory to avoid collision
+    temp_dir="${HDT_TMP_DIR}/text_final_$$"
+    mkdir -p "${temp_dir}"
+    nt_to_hdt "${text_nt}" "${temp_dir}"
+    mv "${temp_dir}/graph.hdt" "${final_hdt}"
+    rm -rf "${temp_dir}"
+
     gzip -c "${text_nt}" > "${final_ntgz}"
     log "✓ Done: ${final_hdt}, ${final_ntgz}"
     exit 0

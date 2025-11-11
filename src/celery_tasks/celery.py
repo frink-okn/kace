@@ -294,7 +294,7 @@ def create_deployment(kg_config: dict, cpu: str, memory: str, lakefs_action):
     mail_canary.send_deployed_email(
         kg_name=kg_config.title,
         version=lakefs_action.tag_id,
-        recipient_email=kg_config.contact.email,
+        recipient_email=",".join(kg_config.contact.email),
     )
 
 if __name__ == '__main__':

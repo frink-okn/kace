@@ -55,7 +55,12 @@ spec:
             {{- toYaml .Values.resources | nindent 12 }}
           volumeMounts:
             - mountPath: {{ .Values.app_config.local_data_dir }}
+              {{ if .Values.app_config.local_pvc_create }}
               name: local
+              {{ else }}
+              name: shared
+              subPath: {{ .Values.app_config.local_pvc_subpath }}
+              {{ end }}
             {{ if .Values.app_config.shared_pvc_name }}
             - mountPath: {{ .Values.app_config.shared_data_dir }}
               name: shared
@@ -81,7 +86,12 @@ spec:
             {{- toYaml .Values.resources | nindent 12 }}
           volumeMounts:
             - mountPath: {{ .Values.app_config.local_data_dir }}
+            {{ if .Values.app_config.local_pvc_create }}
               name: local
+            {{ else }}
+              name: shared
+              subPath: {{ .Values.app_config.local_pvc_subpath }}
+            {{ end }}
             {{ if .Values.app_config.shared_pvc_name }}
             - mountPath: {{ .Values.app_config.shared_data_dir }}
               name: shared
@@ -113,9 +123,11 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       volumes:
+        {{ if .Values.app_config.local_pvc_create }}
         - name: local
           persistentVolumeClaim:
             claimName: {{ .Values.app_config.local_pvc_name }}
+        {{ end }}
         {{ if .Values.app_config.shared_pvc_name }}
         - name: shared
           persistentVolumeClaim:

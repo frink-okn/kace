@@ -1,10 +1,14 @@
+{{ if .Values.app_config.local_pvc_create }}
+
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: {{ .Values.app_config.local_pvc_name }}
 spec:
+  storageClassName:  {{ .Values.app_config.local_pvc_storage_class }}
   accessModes:
     - ReadWriteMany
   resources:
     requests:
       storage: {{ .Values.app_config.local_pvc_size }}
+  {{ end }}

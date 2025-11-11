@@ -85,8 +85,8 @@ affinity: {}
 
 redis:
   image:
-    repository: docker.io/bitnami/redis
-    tag: "7.2"
+    repository: docker.io/redis
+    tag: alpine3.22
   resources:
     limits:
       cpu: 100m
@@ -111,3 +111,4 @@ app_config:
   # shared with other components, useful for deployment.
   shared_pvc_name: ""
   local_pvc_size: 20Gi
+  local_pvc_storage_class: ""

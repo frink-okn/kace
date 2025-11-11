@@ -101,11 +101,39 @@ merge_text_to_nt() {
 
     log "Merging ${#TEXT_FILES[@]} RDF text files..."
     if ! ${RIOT_BIN} --merge --nocheck --output NT "${TEXT_FILES[@]}" > "${out_nt}" 2> "${REPORT_DIR}/riot_merge.log"; then
-        log "Warning: riot merge failed, see ${REPORT_DIR}/riot_merge.log"
-        return 0
+        log "ERROR: riot merge failed, see ${REPORT_DIR}/riot_merge.log"
+
+        # --- Create GitHub issue on merge failure ---
+        local repo="frink-okn/graph-coordination"
+        local title="RDF Merge failed for ${REPO_NAME}"
+        local body_file="/tmp/gh_issue_body_merge.txt"
+
+        {
+            echo "RDF merge failed for **${REPO_NAME}**"
+            echo
+            echo "**Commit:** ${COMMIT_ID:-unknown}"
+            echo "**KG:** ${KG_NAME:-unknown}"
+            echo
+            echo "### Error Log (last 100 lines)"
+            echo '```'
+            tail -n 100 "${REPORT_DIR}/riot_merge.log"
+            echo '```'
+            echo
+            echo "_This issue was automatically created by the RDF merge step of the converter script._"
+        } > "${body_file}"
+
+        # Require gh CLI to succeed
+        gh issue create \
+            --title "${title}" \
+            --body-file "${body_file}" \
+            --label "graph-validation" \
+            --repo "${repo}"
+        err_and_exit "GitHub issue creation failed for RDF merge error."
+
+        err_and_exit "RDF merge failed — issue created on GitHub."
     fi
 
-    # FIX: Check for empty files
+    # Check for empty output
     if [ ! -s "${out_nt}" ]; then
         log "Warning: merged NT is empty (metadata-only or VOID TTL). Skipping text merge."
         rm -f "${out_nt}"
@@ -113,6 +141,7 @@ merge_text_to_nt() {
     fi
 
     echo "${out_nt}"
+
 }
 
 validate_nt() {
@@ -198,7 +227,41 @@ combine_hdt_files() {
 
     merged="${HDT_TMP_DIR}/merged_hdt_parts.nt"
     log "Merging ${#nts[@]} NT files from HDTs..."
-    ${RIOT_BIN} --merge --nocheck --output NT "${nts[@]}" > "${merged}"
+
+    if ! ${RIOT_BIN} --merge --nocheck --output NT "${nts[@]}" > "${merged}" 2> "${REPORT_DIR}/riot_merge_hdt.log"; then
+        log "ERROR: riot merge failed, see ${REPORT_DIR}/riot_merge_hdt.log"
+
+        # --- Create GitHub issue on merge failure ---
+        local repo="frink-okn/graph-coordination"
+        local title="RDF Merge failed for ${REPO_NAME}"
+        local body_file="/tmp/gh_issue_body_merge.txt"
+
+        {
+            echo "RDF merge failed for **${REPO_NAME}**"
+            echo
+            echo "**Commit:** ${COMMIT_ID:-unknown}"
+            echo "**KG:** ${KG_NAME:-unknown}"
+            echo "**HDT to NT files:** ${nts} "
+            echo "### Error Log (Last 100 lines)"
+            echo '```'
+            tail -n 100 "${REPORT_DIR}/riot_merge_hdt.log"
+            echo '```'
+            echo
+            echo "_This issue was automatically created by the RDF merge step of the converter script._"
+        } > "${body_file}"
+
+        # Require gh CLI to succeed
+        gh issue create \
+            --title "${title}" \
+            --body-file "${body_file}" \
+            --label "graph-validation" \
+            --repo "${repo}"
+        err_and_exit "GitHub issue creation failed for RDF merge error."
+
+        err_and_exit "RDF merge failed — issue created on GitHub."
+    fi
+
+
 
     # FIX: Use unique temp directory to avoid collisions
     local temp_hdt_dir="${HDT_TMP_DIR}/temp_combine_$$"

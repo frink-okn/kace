@@ -68,7 +68,7 @@ class JobMan:
                         ]
                     )
                 ),
-                backoff_limit=4,
+                backoff_limit=0,
             ),
         )
 
@@ -145,7 +145,7 @@ class JobMan:
                 return
 
             # Consider the Job failed if the number of failures reaches the backoff limit.
-            if failed >= backoff_limit:
+            if failed > backoff_limit:
                 logger.error(f"Job '{job_name}' failed after {failed} attempts.")
                 raise Exception(f"Job '{job_name}' failed.")
 

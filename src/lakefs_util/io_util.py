@@ -68,7 +68,8 @@ def clear_directory(path, delete_root=False):
             print(f"Warning: An error occurred while deleting the root directory '{path}': {e}. Skipping...")
 
 
-async def download_files(repo: str, branch: str, extensions: List = None, exclude_files: List = None):
+async def download_files(repo: str, branch: str, extensions: List = None, exclude_files: List = None,
+                         exclude_known_extension: List = None, delete_all_files=True):
     rdf_extension = [
             "rdf",  # RDF/XML
             "xml",  # RDF/XML, TriX
@@ -80,7 +81,8 @@ async def download_files(repo: str, branch: str, extensions: List = None, exclud
             "rj",  # RDF/JSON
             "trig",  # TriG
             "trix",  # TriX
-            "n3"  # N3
+            "n3",  # N3
+            "hdt",
         ]
     compression_extensions = [
         "gz", "bz2"
@@ -92,6 +94,8 @@ async def download_files(repo: str, branch: str, extensions: List = None, exclud
         for ext in compression_extensions:
             extensions += [f"{x}.{ext}" for x in rdf_extension]
         extensions += compression_extensions
+    if exclude_known_extension:
+        extensions = [ext for ext in extensions if ext not in exclude_known_extension]
     logger.info(f"Downloading {extensions} file types from {repo}@{branch} ")
     cookie = await login_and_get_cookies(config.lakefs_url, config.lakefs_access_key, config.lakefs_secret_key)
     all_files = []
@@ -114,7 +118,8 @@ async def download_files(repo: str, branch: str, extensions: List = None, exclud
             all_files += list([x['path'] for x in results["results"]])
         base_dir = os.path.join(config.local_data_dir, repo, branch)
         if os.path.exists(base_dir):
-            clear_directory(base_dir, delete_root=False)
+            if  delete_all_files:
+                clear_directory(base_dir, delete_root=False)
         else:
             logger.info(f"Directory {base_dir} does not exist; creating it ")
             os.makedirs(base_dir)
@@ -123,12 +128,13 @@ async def download_files(repo: str, branch: str, extensions: List = None, exclud
                 logger.info(f"Skipping {file_name}")
                 continue
             suffixes = file_name.split('.')
-            if suffixes[-1] in extensions:
-                #validate if compression extensions
-                if suffixes[-1] in compression_extensions:
-                    if suffixes[-2] not in rdf_extension:
-                        logger.error(f"unsupported rdf based compression")
-                        raise Exception(f"Unsupported rdf based compression")
+            downloadable = False
+            for e in extensions:
+                e_split = e.split('.')
+                if suffixes[-len(e_split):] == e_split:
+                    downloadable = True
+                    break
+            if downloadable:
                 files_downloaded.append(file_name.lstrip('/'))
                 download_path = os.path.join(base_dir, file_name)
                 await download_file(file_name, repo, branch, download_path, session)
@@ -315,9 +321,9 @@ async def open_file_with_retry(filepath: str, mode: str = "rb", retries: int = 1
             await asyncio.sleep(delay)
             delay *= 2
 
-# if __name__ == '__main__':
-    # import asyncio
-    # asyncio.run(
-    #     download_hdt_files("climatepub4-kg", 'v0.0.4', kg_name='climates' )
-    # )
-    #      upload_files("test-hook-repo", root_branch= "main", local_files=[('/home/kebedey/projects/frink/kace/README.MD', 'test_file')]))
+if __name__ == '__main__':
+    import asyncio
+    asyncio.run(
+        download_hdt_files("spoke-gene-lab", 'main', kg_name='climates' )
+    )
+         # upload_files("test-hook-repo", root_branch= "main", local_files=[('/home/kebedey/projects/frink/kace/README.MD', 'test_file')]))

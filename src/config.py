@@ -29,6 +29,8 @@ class Config(BaseModel):
     smtp_server: str
     gh_token: str
     kg_config_url: str
+    stop_email: str
+
 
 
 config = Config(
@@ -54,5 +56,6 @@ config = Config(
     smtp_server=os.environ.get('SMTP_SERVER', ''),
     smtp_port=int(os.environ.get('SMTP_PORT', 25)),
     gh_token=os.environ.get('GH_TOKEN', ''),
-    kg_config_url=os.environ.get('KG_CONFIG_URL', 'https://raw.githubusercontent.com/frink-okn/okn-registry/refs/heads/main/docs/registry/kgs.yaml')
+    kg_config_url=os.environ.get('KG_CONFIG_URL', 'https://raw.githubusercontent.com/frink-okn/okn-registry/refs/heads/main/docs/registry/kgs.yaml'),
+    stop_email=os.environ.get('STOP_EMAIL', '')
 )

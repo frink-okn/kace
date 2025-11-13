@@ -1,14 +1,14 @@
 FROM qacompany/qendpoint
 
-ARG QVERSION="2.5.0"
+ARG QVERSION="2.5.2"
 
 
-RUN apt-get update && apt-get install -y unzip python3
+RUN apt-get update && apt-get install -y unzip python3 curl
 
 WORKDIR /app
 
-RUN wget https://github.com/the-qa-company/qEndpoint/releases/download/v${QVERSION}/qendpoint-cli.zip
-
+#RUN wget https://github.com/the-qa-company/qEndpoint/releases/download/v${QVERSION}/qendpoint-cli.zip
+COPY ./qendpoint-cli-2.5.2-distribution.zip ./qendpoint-cli.zip
 RUN unzip qendpoint-cli.zip
 
 
@@ -34,12 +34,23 @@ RUN     (curl --location --silent --show-error --fail --retry-connrefused --retr
 	rm jena.tar.gz* && \
 	cd /jena && rm -rf *javadoc* *src* bat
 
+RUN apt-get update && apt-get install -y unzip python3 curl gpg
+
+# Install GitHub CLI
+RUN type -p curl >/dev/null || apt-get install -y curl && \
+    curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | gpg --dearmor -o /usr/share/keyrings/githubcli-archive-keyring.gpg && \
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | tee /etc/apt/sources.list.d/github-cli.list > /dev/null && \
+    apt-get update && apt-get install -y gh && \
+    rm -rf /var/lib/apt/lists/*
+
+
+
 # Add to PATH
 ENV PATH $PATH:/app/qendpoint-cli-${QVERSION}/bin/:/jena/bin
 # Check it works
 RUN riot --version
 RUN rdf2hdt.sh --help
-
+RUN gh --version
 
 COPY ./convert-all.sh /bin/convert-all.sh
 

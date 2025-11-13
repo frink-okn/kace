@@ -142,7 +142,8 @@ class MailCanary:
                 server.starttls()  # Secure the connection
                 if self.sender_password:
                     server.login(self.sender_email, self.sender_password)
-                server.send_message(message)
+                if not config.stop_email:
+                    server.send_message(message)
 
             print(f"Email sent to {recipient_email}")
 

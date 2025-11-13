@@ -1,15 +1,27 @@
-from typing import List, Dict, Optional
-from pydantic import BaseModel, Field, PrivateAttr
+from typing import List, Dict, Optional, Union
+from pydantic import BaseModel, Field, PrivateAttr,field_validator
 import yaml
 import aiohttp
 from config import config
 
 # Define a model for the nested "contact" information
 class Contact(BaseModel):
-    email: Optional[str] = ""
-    github: Optional[str] = ""
+    email: Optional[List[str]] = []
+    github: Optional[List[str]] = []
     label: Optional[str] = ""
 
+    @field_validator("email", "github", mode="before")
+    @classmethod
+    def parse_comma_or_list(cls, value):
+        if value is None:
+            return []
+        if isinstance(value, str):
+            # Split on commas and strip spaces
+            return [v.strip() for v in value.split(",") if v.strip()]
+        elif isinstance(value, list):
+            # Ensure all elements are strings and stripped
+            return [str(v).strip() for v in value if str(v).strip()]
+        return value
 # Define a model for the nested "frink-options"
 class FrinkOptions(BaseModel):
     documentation_path: Optional[str] = Field(alias="documentation-path")

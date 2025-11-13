@@ -292,34 +292,6 @@ class ServerDeploymentManager:
         return False
 
 
-FUSEKI_TEMPLATE_DIR = (
-        os.path.dirname(os.path.realpath(__file__)) +
-        os.path.join(os.path.sep + "templates", "fuseki")
-)
-FEDERATION_TEMPLATE_DIR = (
-        os.path.dirname(os.path.realpath(__file__)) +
-        os.path.join(os.path.sep + "templates", "federation")
-)
-LDF_TEMPLATE_DIR = (
-        os.path.dirname(os.path.realpath(__file__)) +
-        os.path.join(os.path.sep + "templates", "ldf")
-)
-
-fuseki_server_manager = ServerDeploymentManager(
-    templates_dir=FUSEKI_TEMPLATE_DIR,
-    namespace=app_config.k8s_namespace
-)
-
-federation_server_manager = ServerDeploymentManager(
-    templates_dir=FEDERATION_TEMPLATE_DIR,
-    namespace=app_config.k8s_namespace
-)
-
-ldf_server_manager = ServerDeploymentManager(
-    templates_dir=LDF_TEMPLATE_DIR,
-    namespace=app_config.k8s_namespace
-)
-
 
 
 

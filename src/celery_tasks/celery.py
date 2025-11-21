@@ -44,7 +44,7 @@ def create_hdt_conversion_job(action_payload,
 
     working_dir = str(os.path.join("/mnt/repo", lakefs_payload.repository_id, lakefs_payload.branch_id))
     logger.info("working directory: " + working_dir)
-
+    kg_config = asyncio.run(KGConfig.from_git()).get_by_repo(lakefs_payload.repository_id)
     if convert_to_hdt:
         logger.info(f'Job name: {job_name}')
         # report the job id back ...
@@ -67,6 +67,7 @@ def create_hdt_conversion_job(action_payload,
                     },
                     env_vars={
                         "GH_TOKEN": config.gh_token,
+                        "GH_HANDLES": ",".join(kg_config.github_handles),
                         "JAVA_OPTIONS": java_opts,
                         "MEM_SIZE": mem_size,
                         "WORKING_DIR": working_dir,
@@ -284,11 +285,12 @@ def create_deployment(kg_config: dict, cpu: str, memory: str, lakefs_action):
     except Exception as e:
         logger.exception(f'Spider Job failed {job_name} : {str(e)}')
     kg_config = asyncio.run(KGConfig.from_git()).get_by_repo(lakefs_action.repository_id)
-    mail_canary.send_deployed_email(
-        kg_name=kg_config.title,
-        version=lakefs_action.tag_id,
-        recipient_email=",".join(kg_config.contact.email),
-    )
+    if kg_config.emails:
+        mail_canary.send_deployed_email(
+            kg_name=kg_config.title,
+            version=lakefs_action.tag_id,
+            recipient_email=",".join(kg_config.emails),
+        )
 
 if __name__ == '__main__':
     app.start()

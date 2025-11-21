@@ -19,6 +19,7 @@ KEEP_TEMP=${KEEP_TEMP:-0}
 REPO_NAME=${REPO_NAME:-'Unknown'}
 COMMIT_ID=${COMMIT_ID:-""}
 KG_NAME=${KG_NAME:-""}
+GH_HANDLES=${GH_HANDLES:-""}
 
 JAVA_OPTIONS="${JAVA_OPTIONS:-} -Djava.io.tmpdir=${JAVATMP_DIR}"
 export JAVA_OPTIONS
@@ -27,6 +28,29 @@ FAILURES_LOG=${REPORT_DIR}/failures.log
 VALIDATE_LOG=${REPORT_DIR}/riot_validate.log
 
 mkdir -p "${RIOT_TMP_DIR}" "${HDT_TMP_DIR}" "${HDT_FINAL_DIR}" "${NT_FINAL_DIR}" "${REPORT_DIR}" "${JAVATMP_DIR}"
+
+create_github_issue() {
+    local title="$1"
+    local body_file="$2"
+    local repo="$3"
+    local label="${4:-graph-validation}"
+
+    # Base command
+    local cmd=(gh issue create \
+        --title "${title}" \
+        --body-file "${body_file}" \
+        --label "${label}" \
+        --repo "${repo}")
+
+    # Add assignees if GH_HANDLES is set and non-empty
+    if [[ -n "${GH_HANDLES:-}" ]]; then
+        cmd+=(--assignee "${GH_HANDLES}")
+    fi
+
+    "${cmd[@]}"
+}
+
+
 
 cleanup() {
     status=$?
@@ -123,11 +147,7 @@ merge_text_to_nt() {
         } > "${body_file}"
 
         # Require gh CLI to succeed
-        gh issue create \
-            --title "${title}" \
-            --body-file "${body_file}" \
-            --label "graph-validation" \
-            --repo "${repo}"
+        create_github_issue "${title}" "${body_file}" "${repo}"
         err_and_exit "GitHub issue creation failed for RDF merge error."
 
         err_and_exit "RDF merge failed — issue created on GitHub."
@@ -172,11 +192,7 @@ validate_nt() {
         } > "${body_file}"
 
         # Create GitHub issue
-        gh issue create \
-            --title "${title}" \
-            --body-file "${body_file}" \
-            --label "graph-validation" \
-            --repo "${repo}"
+        create_github_issue "${title}" "${body_file}" "${repo}"
 
         return 1
     fi

@@ -1,13 +1,14 @@
 from typing import List, Dict, Optional, Union
-from pydantic import BaseModel, Field, PrivateAttr,field_validator
+from pydantic import BaseModel, Field, PrivateAttr,field_validator, model_validator
 import yaml
 import aiohttp
 from config import config
+from functools import reduce
 
 # Define a model for the nested "contact" information
 class Contact(BaseModel):
-    email: Optional[List[str]] = []
-    github: Optional[List[str]] = []
+    email: Optional[List[str]] = Field(default_factory=list)
+    github: Optional[List[str]] = Field(default_factory=list)
     label: Optional[str] = ""
 
     @field_validator("email", "github", mode="before")
@@ -30,9 +31,11 @@ class FrinkOptions(BaseModel):
 
 # Define a model for each KG item
 class KG(BaseModel):
-    contact: Contact
     description: str
     frink_options: Optional[FrinkOptions] = Field(None, alias="frink-options")
+    contacts: Optional[List[Contact]] = None
+    # @deprecated field contact
+    contact: Optional[Contact] = None
     funding: Optional[str] = None
     homepage: Optional[str] = None
     shortname: Optional[str] = None
@@ -41,6 +44,24 @@ class KG(BaseModel):
     title: Optional[str] = None
     tpf: Optional[str] = None
     stats: Optional[str] = None
+
+    @model_validator(mode="after")
+    def migrate_contact_field(self):
+        if self.contacts is None and self.contact is not None:
+            self.contacts = [self.contact]
+        return self
+
+    @property
+    def emails(self):
+        if not self.contacts:
+            return []
+        return list(reduce(lambda x, y: x + y.email, self.contacts, []))
+
+    @property
+    def github_handles(self) -> List[str]:
+        if not self.contacts:
+            return []
+        return list(reduce(lambda x, y: x + y.github, self.contacts, []))
 
 # Define a container model for the entire YAML structure
 class KGConfig(BaseModel):
@@ -80,5 +101,6 @@ if __name__ == "__main__":
     print(config.get_by_repo("urban-flooding-open-knowledge-network"))
     bioheath = config.get_by_repo("biohealth")
     print(config.get_by_repo("biohealth").frink_options)
+    print(bioheath.emails)
     # print(config.get_by_repo("dream-kg").contact.emil)
 

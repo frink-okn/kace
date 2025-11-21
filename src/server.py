@@ -63,15 +63,16 @@ async def upload_hdt_callback(action_model: LakefsMergeActionModel,
                                   branch_id=action_model.branch_id,
                                   error=e)
         raise e
-    email_to = ",".join(kg_config.contact.email)
-    mail_canary.send_review_email(
-        recipient_email=email_to,
-        branch_name=branch_name,
-        version=tag,
-        repository_name=action_model.repository_id,
-        github_pr=pr_link,
-        github_branch=git_branch
-    )
+    if kg_config.emails:
+        email_to = ",".join(kg_config.emails)
+        mail_canary.send_review_email(
+            recipient_email=email_to,
+            branch_name=branch_name,
+            version=tag,
+            repository_name=action_model.repository_id,
+            github_pr=pr_link,
+            github_branch=git_branch
+        )
     slack_canary.notify_event("✔️ Conversion and Documentation complete.",
                               repository_id=action_model.repository_id,
                               branch_id=action_model.branch_id,

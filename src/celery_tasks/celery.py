@@ -1,6 +1,6 @@
 from celery import Celery
 from k8s.podman import JobMan
-from k8s.server_man import fuseki_server_manager, federation_server_manager, ldf_server_manager
+from k8s import fuseki_server_manager, ldf_server_manager
 from models.lakefs_models import LakefsMergeActionModel, LakefTagCreationModel
 from models.kg_metadata import KGConfig, KG
 from lakefs_util.io_util import resolve_commit
@@ -255,13 +255,6 @@ def create_deployment(kg_config: dict, cpu: str, memory: str, lakefs_action):
         resources=None
     )
     logger.info(f'updated ldf server deployment')
-    # Create federation server
-    # @TODO annotations might need to change
-    # federation_server_manager.create_all(parameters={},
-    #                                      annotations=annotations,
-    #                                      # Use default resources in the template
-    #                                      resources=None
-    #                                      )
     logger.info(f'updated federation server deployment')
     job_name = f'spider-cl-{kg_name}-{lakefs_action.commit_id[:10]}'
     try:

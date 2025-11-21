@@ -1,4 +1,5 @@
 from typing import List, Dict, Optional, Union
+import httpx
 from pydantic import BaseModel, Field, PrivateAttr,field_validator, model_validator
 import yaml
 import aiohttp
@@ -75,6 +76,12 @@ class KGConfig(BaseModel):
             kgs = yaml.safe_load(await response.text())
             return KGConfig(**kgs)
 
+    @staticmethod
+    def from_git_sync():
+        with httpx.Client() as session:
+            response  = session.get(config.kg_config_url)
+            kgs = yaml.safe_load(response.text)
+            return KGConfig(**kgs)
 
 
     def __init__(self, **data):

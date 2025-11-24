@@ -24,13 +24,15 @@ class LDFServerDeploymentMananger(ServerDeploymentManager):
         kgConfig: KGConfig = KGConfig.from_git_sync()
         for kg in kgConfig.kgs:
             if kg.frink_options:
-                kg_details.append(
-                    {
-                        "title": kg.title,
-                        "data_source_path": kg.shortname,
-                        "hdt_file_name": kg.shortname + '.hdt'
-                    }
-                )
+                is_added = kg.shortname in [x['data_source_path'] for x in kg_details]
+                if not is_added:
+                    kg_details.append(
+                        {
+                            "title": kg.title,
+                            "data_source_path": kg.shortname,
+                            "hdt_file_name": kg.shortname + '.hdt'
+                        }
+                    )
             else:
                 print(kg)
         data_source_config = [LDFServerDeploymentMananger._make_data_source_entry(**kg_detail)

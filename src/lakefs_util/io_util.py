@@ -148,26 +148,30 @@ async def download_file(file_name, repo, branch, download_path,
                       f'{urllib.parse.quote_plus(branch)}'
                       f'/objects/stat?path={file_name}')
     response = await session.get(stats_endpoint)
+    if response.status != 200:
+        logger.warning(f"File {file_name} not found in {repo}@{branch} (Status: {response.status})")
+        return None
     stat_obj = await response.json()
     file_size = stat_obj["size_bytes"]
     logger.info(f"Downloading {file_name}: {file_size}")
     download_dir = os.path.dirname(download_path)
-    if not os.path.exists(download_dir):
-        os.makedirs(download_dir)
-    with open(download_path, 'wb') as stream:
-        file_url = (f'{config.lakefs_url}/api/v1/repositories/{urllib.parse.quote_plus(repo)}/refs/'
-                    f'{urllib.parse.quote_plus(branch)}'
-                    f'/objects?path={file_name}')
-        chunk = 65_536
-        current_pos = 0
-        while current_pos < file_size:
-            from_bytes = current_pos
-            to_bytes = min(current_pos + chunk, file_size - 1)
-            data = await session.get(file_url, headers={'Range': f'bytes={from_bytes}-{to_bytes}'})
-            async for content in data.content:
-                stream.write(content)
-            current_pos = to_bytes + 1
+    # if not os.path.exists(download_dir):
+    #     os.makedirs(download_dir)
+    # with open(download_path, 'wb') as stream:
+    #     file_url = (f'{config.lakefs_url}/api/v1/repositories/{urllib.parse.quote_plus(repo)}/refs/'
+    #                 f'{urllib.parse.quote_plus(branch)}'
+    #                 f'/objects?path={file_name}')
+    #     chunk = 65_536
+    #     current_pos = 0
+    #     while current_pos < file_size:
+    #         from_bytes = current_pos
+    #         to_bytes = min(current_pos + chunk, file_size - 1)
+    #         data = await session.get(file_url, headers={'Range': f'bytes={from_bytes}-{to_bytes}'})
+    #         async for content in data.content:
+    #             stream.write(content)
+    #         current_pos = to_bytes + 1
     logger.info(f"Download {file_name} complete")
+    return download_path
 
 
 async def download_hdt_files(repo: str, branch: str, kg_name: str, hdt_path: str='hdt') -> None:
@@ -321,9 +325,61 @@ async def open_file_with_retry(filepath: str, mode: str = "rb", retries: int = 1
             await asyncio.sleep(delay)
             delay *= 2
 
-if __name__ == '__main__':
-    import asyncio
-    asyncio.run(
-        download_hdt_files("spoke-gene-lab", 'main', kg_name='climates' )
+
+async def download_file_from_latest_tag(repo: str, remote_file_path: str, local_download_path: str):
+    """
+    Downloads a specific file from the latest tag of the specified repository.
+
+    :param repo: The name of the repository.
+    :param remote_file_path: The path of the file in the repository.
+    :param local_download_path: The local path where the file should be saved.
+    """
+    # create client
+    client = lakefs.client.LakeFSClient(
+        configuration=lakefs_sdk.configuration.Configuration(
+            config.lakefs_url,
+            username=config.lakefs_access_key,
+            password=config.lakefs_secret_key
+        )
     )
+
+    # get all tags
+    results = client.tags_api.list_tags(repo)
+    pagination = results.pagination
+    tags_list = results.results
+    while pagination.has_more:
+        results = client.tags_api.list_tags(repo, after=pagination.next_offset)
+        pagination = results.pagination
+        tags_list.extend(results.results)
+
+    if not tags_list:
+        raise Exception(f"No tags found for repository {repo}")
+
+    versions = [tag.id.lstrip('v') for tag in tags_list]
+    latest_version = get_latest_version(versions)
+    latest_tag = f"v{latest_version}"
+
+    logger.info(f"Latest tag for {repo} is {latest_tag}. Downloading {remote_file_path}...")
+
+    cookie = await login_and_get_cookies(config.lakefs_url, config.lakefs_access_key, config.lakefs_secret_key)
+    async with aiohttp.ClientSession(cookies=cookie) as session:
+        response = await download_file(remote_file_path, repo, latest_tag, local_download_path, session)
+        if not response:
+            return f"{repo}"
+
+
+if __name__ == '__main__':
+
+    from models.kg_metadata import KGConfig
+    kgs = KGConfig.from_git_sync().kgs
+    import asyncio
+    errors = []
+    skip_list = [] #['ubergraph', 'wikidata', 'sem-open-alex-kg']
+    for kg in kgs:
+        if kg.frink_options and kg.frink_options.lakefs_repo not in skip_list:
+            print(f'***** {kg.frink_options.lakefs_repo} ****')
+            err = asyncio.run(download_file_from_latest_tag(kg.frink_options.lakefs_repo, "nt/graph.nt.gz", "local"))
+            errors.append(err)
+            print("*8888***"*10)
          # upload_files("test-hook-repo", root_branch= "main", local_files=[('/home/kebedey/projects/frink/kace/README.MD', 'test_file')]))
+    print([x for x in errors if x])

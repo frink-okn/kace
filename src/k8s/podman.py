@@ -14,7 +14,8 @@ mapping = {
     "spider-job": os.path.dirname(os.path.realpath(__file__)) + os.path.join(os.path.sep + "templates", "spider-client.yaml"),
     "neo4j-rdf-job": os.path.dirname(os.path.realpath(__file__)) + os.path.join(os.path.sep + "templates", "neo4j-rdf-job.yaml"),
     "neo4j-json-job": os.path.dirname(os.path.realpath(__file__)) + os.path.join(os.path.sep + "templates", "neo4j-json-job.yaml"),
-    "documentation-job": os.path.dirname(os.path.realpath(__file__)) + os.path.join(os.path.sep + "templates", "documentation-job.yaml")
+    "documentation-job": os.path.dirname(os.path.realpath(__file__)) + os.path.join(os.path.sep + "templates", "documentation-job.yaml"),
+    "qlever-index-job": os.path.dirname(os.path.realpath(__file__)) + os.path.join(os.path.sep + "templates", "qlever-index-job.yaml")
 
     ## add other pods here
 }
@@ -73,7 +74,7 @@ class JobMan:
         )
 
     def run_job(self, job_type, job_name, repo: str, branch: str, command: List[str] = None, args: List[str] = None,
-                resources=None, env_vars=None):
+                resources=None, env_vars=None, additional_volume_mounts=None):
         if env_vars is None:
             env_vars = dict()
         job: kubernetes.client.V1Job = self.job_objects[job_type]
@@ -104,6 +105,12 @@ class JobMan:
                 # sub_path=f"{repo}/{branch}"
             )
         ]
+        if additional_volume_mounts:
+            for v in additional_volume_mounts:
+                volume_mounts.append(client.V1VolumeMount(
+                    name=v[0],
+                    mount_path=v[1]
+                ))
         pod_template.containers[0].volume_mounts = volume_mounts
 
         api = client.BatchV1Api()

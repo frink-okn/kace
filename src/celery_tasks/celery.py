@@ -1,9 +1,10 @@
 from celery import Celery
+from celery.schedules import crontab
 from k8s.podman import JobMan
 from k8s import fuseki_server_manager, ldf_server_manager
 from models.lakefs_models import LakefsMergeActionModel, LakefTagCreationModel
 from models.kg_metadata import KGConfig, KG
-from lakefs_util.io_util import resolve_commit
+from lakefs_util.io_util import resolve_commit, download_file_from_latest_tag
 from log_util import LoggingUtil
 from config import config
 import os
@@ -123,6 +124,12 @@ def create_hdt_conversion_job(action_payload,
 app.conf.update(
     result_expires=3600,
     broker_connection_retry_on_startup=True,
+    beat_schedule={
+        'weekend-maintenance': {
+            'task': 'celery_tasks.celery.qlever_index',
+            'schedule': crontab(hour=0, minute=0, day_of_week='sat,sun'),
+        },
+    }
 )
 
 
@@ -291,6 +298,121 @@ def create_deployment(kg_config: dict, cpu: str, memory: str, lakefs_action):
             version=lakefs_action.tag_id,
             recipient_email=",".join(kg_config.emails),
         )
+
+@app.task
+def qlever_index():
+    logger.info("Starting QLever Index maintenance task")
+    job = JobMan()
+    job_name = "qlever-index-maintenance"
+    kg_config: KGConfig = KGConfig.from_git_sync()
+    working_dir = "/shared/nt-conversions"
+
+    async def download_all(kgs):
+        tasks = []
+        for kg in kgs:
+            if kg.frink_options and kg.frink_options.lakefs_repo:
+                repo = kg.frink_options.lakefs_repo
+                local_path = os.path.join(working_dir, repo, "nt", "graph.nt.gz")
+                tasks.append(download_file_from_latest_tag(repo, "nt/graph.nt.gz", local_path))
+        if tasks:
+            await asyncio.gather(*tasks)
+
+    asyncio.run(download_all(kg_config.kgs))
+    skip_repos = [
+        'geoconnex',
+        'spatial-kg',
+        'hydrology-kg',
+        'dream-kg',
+        'scales-kg',
+        'ubergraph',
+        'wikidata',
+        'sem-open-alex-kg'
+    ]
+    build_args = [
+        '-c',
+        'ulimit -Sn 1048576; IndexBuilderMain -i frink -s ../frink-qlever.settings.json'
+
+    ]
+    for kg in kg_config.kgs:
+        if kg in skip_repos:
+            continue
+        build_args.append(
+            f'-f <(gunzip -c {working_dir}/{kg.shortname}/nt/graph.nt.gz)',
+            f'-g https://purl.org/okn/frink/kg/{kg.shortname}',
+            '-F nt'
+        )
+
+    additional_kg = {
+        # s2 data
+        "geoconnex#s2": {
+            "file_path": f'{working_dir}/geoconnex/geoconnex-geo.nt.gz'
+        },
+        "hydrologykg#s2": {
+            "file_path": f'{working_dir}/hydrology-geo.nt.gz'
+        },
+        "sockg#s2": {
+            "file_path": f'{working_dir}/sockg-geo.nt.gz'
+        },
+        'spatialkg#s2': {
+            "file_path": f'{working_dir}/spatialkg-geo.nt.gz'
+        },
+        "ufokn#s2": {
+            "file_path": f'{working_dir}/ufokn-geo.nt.gz'
+        },
+        # big graph
+        "ubergraph": {
+            "file_path": f'{working_dir}/ubergraph.nt.gz'
+        },
+        "wikidata": {
+            "file_path": f'{working_dir}/wikidata.nt.gz'
+        },
+        # kgs with doc issues
+        "dream-kg": {
+            "file_path": f'{working_dir}/dream-kg.nt.gz'
+        },
+        "spatial-kg": {
+            "file_path": f'{working_dir}/spatial-kg.nt.gz'
+        },
+        "scales-kg": {
+            "file_path": f'{working_dir}/scales-kg.nt.gz | grep -v "<http://stko-kwg.geog.ucsb.edu/lod/ontology/cellID>"'
+        },
+        "geoconnex": {
+            "file_path": f'{working_dir}/geoconnex.nt.gz'
+        },
+        "hydrology-kg": {
+            "file_path": f'{working_dir}/hydrology-kg.nt.gz'
+        },
+    }
+    build_args += [
+        f'-f <(gunzip -c {value["file_path"]})' + f'-g https://purl.org/okn/frink/kg/{key}' + '-F nt' for key, value in additional_kg.items()
+    ]
+
+
+    
+    job.run_job(
+        job_type="qlever-index-job",
+        job_name=job_name,
+        repo="",
+        branch="",
+        args=[],
+        resources={
+            "requests": {
+                "cpu": "1",
+                "memory": "4Gi"
+            },
+            "limits": {
+                "cpu": "8",
+                "memory": "100Gi"
+            }
+        },
+        env_vars={
+            "JAVA_OPTIONS": "-Xmx24G"
+        }
+    )
+
+    job.watch_job(job_name=job_name)
+    logger.info(f"Job {job_name} finished.")
+
 
 if __name__ == '__main__':
     app.start()

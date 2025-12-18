@@ -106,8 +106,8 @@ if __name__ == "__main__":
 
     # Now you can lookup KG items by their lakefs_repo value
     print(config.get_by_repo("urban-flooding-open-knowledge-network"))
-    bioheath = config.get_by_repo("biohealth")
-    print(config.get_by_repo("biohealth").frink_options)
+    bioheath = config.get_by_repo("nde")
+    print(config.get_by_repo("nde").frink_options)
     print(bioheath.emails)
     # print(config.get_by_repo("dream-kg").contact.emil)
 

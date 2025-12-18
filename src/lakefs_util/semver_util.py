@@ -9,7 +9,15 @@ def get_latest_version(versions):
     :return: The latest version string.
     """
     # Validate versions using semver.parse_version_info
-    valid_versions = [semver.VersionInfo.parse(v) for v in versions]
+    valid_versions = []
+    for v in versions:
+        try:
+            valid_versions.append(semver.VersionInfo.parse(v))
+        except ValueError:
+            continue
+
+    if not valid_versions:
+        raise ValueError("No valid semver versions found in the provided list.")
 
     # Find the maximum version
     latest_version = max(valid_versions)

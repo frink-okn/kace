@@ -1,0 +1,6 @@
+image: adfreiburg/qlever:commit-99b6db5
+command:
+  - bash
+
+
+

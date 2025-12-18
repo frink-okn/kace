@@ -155,21 +155,21 @@ async def download_file(file_name, repo, branch, download_path,
     file_size = stat_obj["size_bytes"]
     logger.info(f"Downloading {file_name}: {file_size}")
     download_dir = os.path.dirname(download_path)
-    # if not os.path.exists(download_dir):
-    #     os.makedirs(download_dir)
-    # with open(download_path, 'wb') as stream:
-    #     file_url = (f'{config.lakefs_url}/api/v1/repositories/{urllib.parse.quote_plus(repo)}/refs/'
-    #                 f'{urllib.parse.quote_plus(branch)}'
-    #                 f'/objects?path={file_name}')
-    #     chunk = 65_536
-    #     current_pos = 0
-    #     while current_pos < file_size:
-    #         from_bytes = current_pos
-    #         to_bytes = min(current_pos + chunk, file_size - 1)
-    #         data = await session.get(file_url, headers={'Range': f'bytes={from_bytes}-{to_bytes}'})
-    #         async for content in data.content:
-    #             stream.write(content)
-    #         current_pos = to_bytes + 1
+    if not os.path.exists(download_dir):
+        os.makedirs(download_dir)
+    with open(download_path, 'wb') as stream:
+        file_url = (f'{config.lakefs_url}/api/v1/repositories/{urllib.parse.quote_plus(repo)}/refs/'
+                    f'{urllib.parse.quote_plus(branch)}'
+                    f'/objects?path={file_name}')
+        chunk = 65_536
+        current_pos = 0
+        while current_pos < file_size:
+            from_bytes = current_pos
+            to_bytes = min(current_pos + chunk, file_size - 1)
+            data = await session.get(file_url, headers={'Range': f'bytes={from_bytes}-{to_bytes}'})
+            async for content in data.content:
+                stream.write(content)
+            current_pos = to_bytes + 1
     logger.info(f"Download {file_name} complete")
     return download_path
 

@@ -21,6 +21,19 @@ app = Celery('celery_tasks',
              backend='rpc://',
              include=['celery_tasks'])
 
+
+app.conf.update(
+    result_expires=3600,
+    broker_connection_retry_on_startup=True,
+    # beat_schedule={
+    #     'weekend-maintenance': {
+    #         'task': 'celery_tasks.celery.qlever_index',
+    #         'schedule': crontab(hour=0, minute=0, day_of_week='sat,sun'),
+    #     },
+    # }
+)
+
+
 # Optional configuration, see the application user guide.
 @app.task(ignore_result=True)
 @slack_canary.slack_notify_on_failure("⚠️ To HDT conversion fail")
@@ -114,23 +127,13 @@ def create_hdt_conversion_job(action_payload,
             }
         }
     )
-    job.watch_job(job_name=doc_job_name)
+    # Disable job watch
+    # job.watch_job(job_name=doc_job_name)
 
     requests.post(config.hdt_upload_callback_url, params={
         "converted_hdt": convert_to_hdt
     }, json=action_payload)
 
-
-app.conf.update(
-    result_expires=3600,
-    broker_connection_retry_on_startup=True,
-    beat_schedule={
-        'weekend-maintenance': {
-            'task': 'celery_tasks.celery.qlever_index',
-            'schedule': crontab(hour=0, minute=0, day_of_week='sat,sun'),
-        },
-    }
-)
 
 
 @app.task(ignore_result=True)

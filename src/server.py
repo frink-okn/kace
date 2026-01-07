@@ -24,20 +24,21 @@ async def upload_hdt_callback(action_model: LakefsMergeActionModel,
     kg_config = (await KGConfig.from_git()).get_by_repo(action_model.repository_id)
     hdt_location = config.local_data_dir + '/' + action_model.repository_id + '/' + action_model.branch_id + '/hdt'
     nt_location = config.local_data_dir + '/' + action_model.repository_id + '/' + action_model.branch_id + '/nt'
+    pr_link, git_branch = "", ""
+    #
+    # try:
+    #     stream = await open_file_with_retry(
+    #         config.local_data_dir + action_model.repository_id + '/' + action_model.branch_id + '/' + 'pr.md',
+    #         "r"
+    #     )
+    #     with stream:
+    #         pr_link, git_branch = stream.read().split(',')
+    # except Exception as e:
+    #     slack_canary.notify_event("⚠️ Github documentation PR link not found, moving along with uploading conversion",
+    #                               repository_id=action_model.repository_id,
+    #                               branch_id=action_model.branch_id,
+    #                               error=e)
 
-    try:
-        stream = await open_file_with_retry(
-            config.local_data_dir + action_model.repository_id + '/' + action_model.branch_id + '/' + 'pr.md',
-            "r"
-        )
-        with stream:
-            pr_link, git_branch = stream.read().split(',')
-    except Exception as e:
-        slack_canary.notify_event("⚠️ Github documentation PR link not found",
-                                  repository_id=action_model.repository_id,
-                                  branch_id=action_model.branch_id,
-                                  error=e)
-        raise e
 
     try:
         stable_branch = await upload_files(
@@ -90,8 +91,6 @@ async def upload_neo4j_files(action_model: LakefsMergeActionModel, background_ta
             repo=action_model.repository_id,
             root_branch=action_model.branch_id,
             local_files=[
-                # (f'{neo4j_location}/neo4j-apoc-export.json', 'neo4j-export'),
-                # (f'{neo4j_location}/stats.txt', 'neo4j-export'),
                 (nt_location, 'nt')
 
             ]

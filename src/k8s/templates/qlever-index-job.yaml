@@ -1,6 +1,8 @@
 image: adfreiburg/qlever:commit-99b6db5
 command:
   - bash
-
+configmap:
+  /qlever/frink-qlever.settings.json: |
+    { "ascii-prefixes-only": false, "num-triples-per-batch": 1000000, "parser-integer-overflow-behavior": "overflowing-integers-become-doubles" }
 
 

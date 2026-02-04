@@ -105,7 +105,27 @@ if __name__ == "__main__":
     config = asyncio.run(KGConfig.from_git())
 
     # Now you can lookup KG items by their lakefs_repo value
-    print(config.get_by_repo("urban-flooding-open-knowledge-network"))
+    repos = ['securechainkg',
+        'geoconnex',
+        'spatialkg',
+        'hydrologykg',
+        'dreamkg',
+        'scales',
+        'spoke-genelab',
+        'spoke-okn',
+        'biobricks-aopwiki',
+        'biobricks-mesh'
+    ]
+    text = ""
+    for r in repos:
+        for c in config.kgs:
+            if c.shortname == r:
+                options = c.frink_options
+                if options:
+                    text += " " + options.lakefs_repo
+
+    print(text)
+    print(config.get_by_repo("gene-expression-atlas-okn"))
     bioheath = config.get_by_repo("nde")
     print(config.get_by_repo("nde").frink_options)
     print(bioheath.emails)

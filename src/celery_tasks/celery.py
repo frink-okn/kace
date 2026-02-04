@@ -303,49 +303,64 @@ def create_deployment(kg_config: dict, cpu: str, memory: str, lakefs_action):
         )
 
 @app.task
-def qlever_index():
+def qlever_index(only_kg=None):
     logger.info("Starting QLever Index maintenance task")
     job = JobMan()
     job_name = "qlever-index-maintenance"
     kg_config: KGConfig = KGConfig.from_git_sync()
     working_dir = "/shared/nt-conversions"
+    skip_repos = [
+        'prokn',
+        'ubergraph',
+        'wikidata',
+        'semopenalex',
+        # errors
+        # 'securechainkg', 9.3G ✖ ️
+        # 'geoconnex', 4.7G ✔
+        # 'spatialkg', 8.6G -- we haven't even gotten at nt files here
+        # 'hydrologykg', 1.4G ✔
+        # 'dreamkg' ✔ ️,
+        # 'scales', 8.2G ✔
+        #
+        # 'spoke-genelab', 900mb ✖ ️
+        # 'spoke-okn',3.6G ✖ ️
+        # 'biobricks-aopwiki' ✔,
+        # 'biobricks-mesh' ✔
 
-    async def download_all(kgs):
+    ]
+    async def download_all(kgs, skip_repos):
         tasks = []
+        logger.info(f'Skip list: {skip_repos}')
         for kg in kgs:
             if kg.frink_options and kg.frink_options.lakefs_repo:
+                if only_kg and kg.shortname not in only_kg:
+                    if only_kg not in skip_repos:
+                        skip_repos += [kg.shortname]
+                    continue
+                if kg.shortname in skip_repos:
+                    logger.info(f'Skipping download for {kg.shortname}')
+                    continue
                 repo = kg.frink_options.lakefs_repo
                 local_path = os.path.join(working_dir, repo, "nt", "graph.nt.gz")
                 tasks.append(download_file_from_latest_tag(repo, "nt/graph.nt.gz", local_path))
         if tasks:
             await asyncio.gather(*tasks)
 
-    asyncio.run(download_all(kg_config.kgs))
-    skip_repos = [
-        'geoconnex',
-        'spatial-kg',
-        'hydrology-kg',
-        'dream-kg',
-        'scales-kg',
-        'ubergraph',
-        'wikidata',
-        'sem-open-alex-kg'
-    ]
-    build_args = [
-        '-c',
-        'ulimit -Sn 1048576; IndexBuilderMain -i frink -s ../frink-qlever.settings.json'
+    asyncio.run(download_all(kg_config.kgs, skip_repos))
 
+    build_args = [
+        'ulimit -Sn 1048576; mkdir -p /shared/qlever-index/; cd /shared/qlever-index/; IndexBuilderMain -i frink -s /qlever/frink-qlever.settings.json'
     ]
     for kg in kg_config.kgs:
-        if kg in skip_repos:
+        if kg.shortname in skip_repos:
             continue
         build_args.append(
-            f'-f <(gunzip -c {working_dir}/{kg.shortname}/nt/graph.nt.gz)',
-            f'-g https://purl.org/okn/frink/kg/{kg.shortname}',
-            '-F nt'
+            " ".join([f'-f <(gunzip -c {working_dir}/{kg.frink_options.lakefs_repo}/nt/graph.nt.gz)',
+                      f'-g https://purl.org/okn/frink/kg/{kg.shortname}',
+                      '-F nt'])
         )
 
-    additional_kg = {
+    non_lakefs_files = {
         # s2 data
         "geoconnex#s2": {
             "file_path": f'{working_dir}/geoconnex/geoconnex-geo.nt.gz'
@@ -386,18 +401,26 @@ def qlever_index():
             "file_path": f'{working_dir}/hydrology-kg.nt.gz'
         },
     }
+
+    additional_kg = {} # if only_kg else non_lakefs_files
     build_args += [
         f'-f <(gunzip -c {value["file_path"]})' + f'-g https://purl.org/okn/frink/kg/{key}' + '-F nt' for key, value in additional_kg.items()
-    ]
-
-
-    
+    ] + ['--stxxl-memory 40G']
+    from functools import reduce
+    # build_args = list(reduce(lambda x, y: x + y.split(' '), build_args, ""))
+    logger.info(build_args)
     job.run_job(
         job_type="qlever-index-job",
         job_name=job_name,
         repo="",
         branch="",
-        args=[],
+        command=["bash"],
+        args=[
+            '-c',
+            ' '.join(build_args)
+        ]
+        ,
+
         resources={
             "requests": {
                 "cpu": "1",
@@ -408,8 +431,11 @@ def qlever_index():
                 "memory": "100Gi"
             }
         },
+        additional_volume_mounts=[
+            ("data", "/shared")
+        ],
         env_vars={
-            "JAVA_OPTIONS": "-Xmx24G"
+            "STXXL_MEMORY": "40G"
         }
     )
 

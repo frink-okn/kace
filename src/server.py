@@ -1,7 +1,5 @@
 import logging
-from http.client import HTTPException
 
-import lakefs
 import uvicorn
 from fastapi import FastAPI, BackgroundTasks, Query, Body
 from models.lakefs_models import LakefsMergeActionModel, LakefTagCreationModel
@@ -11,11 +9,16 @@ from lakefs_util.io_util import download_files, upload_files, download_hdt_files
 from config import config
 from canary.mail import mail_canary
 from canary.slack import slack_canary
+from celery_tasks.celery import qlever_index
+from typing import List
 
 
 app = FastAPI(title="KACE Server",
               description="Kubernetes artifacts Creation Engine (KACE) is a webserver for "
                           "managing k8s workflows and event in sync with Lakefs data updates.")
+
+
+
 
 
 @app.post('/upload_hdt_callback')
@@ -285,6 +288,17 @@ async def create_neo4j_HDT_conversion_task(action_model: LakefsMergeActionModel)
                                       json_dump_files_list=neo4j_json_files,
                                       rdf_mapping_config=kg_config.frink_options.neo4j_conversion_config_path
                                       )
+
+
+async def create_qlever_index_job(only_kg=None):
+    qlever_index.delay(only_kg=only_kg)
+
+
+@app.post("/create_qlever_index_test")
+async def convert_neo4j_to_hdt(only_repos: List[str], background_tasks: BackgroundTasks):
+
+    background_tasks.add_task(create_qlever_index_job, only_repos)
+    return "Started conversion, please check repo tag for uploads."
 
 
 @app.post("/validate_tag")

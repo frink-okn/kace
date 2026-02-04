@@ -39,9 +39,70 @@ class JobMan:
             job_objects[job_type] = self.init_job_object(name=job_type, **self.job_configs[job_type])
         return job_objects
 
+    def ensure_configmap(self, name, data: Dict[str, str]):
+        core_v1 = client.CoreV1Api()
+        configmap_name = f"{name}-config"
+        metadata = client.V1ObjectMeta(
+            name=configmap_name,
+            namespace=self.namespace,
+        )
+        body = client.V1ConfigMap(
+            api_version="v1",
+            kind="ConfigMap",
+            metadata=metadata,
+            data=data
+        )
+        try:
+            core_v1.read_namespaced_config_map(name=configmap_name, namespace=self.namespace)
+            # update
+            logger.info(f"ConfigMap {configmap_name} exists, patching...")
+            core_v1.patch_namespaced_config_map(name=configmap_name, namespace=self.namespace, body=body)
+        except client.exceptions.ApiException as e:
+            if e.status == 404:
+                logger.info(f"Creating ConfigMap {configmap_name}...")
+                core_v1.create_namespaced_config_map(namespace=self.namespace, body=body)
+            else:
+                logger.error(f"Failed to ensure ConfigMap {configmap_name}: {e}")
+                raise e
+
     @staticmethod
-    def init_job_object(name: str, image: str, command: List[str]) -> client.V1Job:
+    def init_job_object(name: str, image: str, command: List[str], configmap: Dict[str, str] = None) -> client.V1Job:
         # create the pod
+        volumes = [
+            client.V1Volume(
+                name="data",
+                persistent_volume_claim=client.V1PersistentVolumeClaimVolumeSource(
+                    claim_name=app_conf.local_pvc_name
+                )
+            )
+        ]
+        
+        container_mounts = []
+        if configmap:
+             volumes.append(client.V1Volume(
+                 name="config-volume",
+                 config_map=client.V1ConfigMapVolumeSource(
+                     name=f"{name}-config"
+                 )
+             ))
+             for path, content in configmap.items():
+                 filename = os.path.basename(path)
+                 container_mounts.append(client.V1VolumeMount(
+                     name="config-volume",
+                     mount_path=path,
+                     sub_path=filename
+                 ))
+
+        container = client.V1Container(
+            name=name,
+            image=image,
+            command=command,
+            tty=True,
+            stdin=True,
+        )
+        if container_mounts:
+            container.volume_mounts = container_mounts
+
         return client.V1Job(
             api_version="batch/v1",
             kind="Job",
@@ -49,24 +110,9 @@ class JobMan:
             spec=client.V1JobSpec(
                 template=client.V1PodTemplateSpec(
                     spec=client.V1PodSpec(
-                        containers=[
-                            client.V1Container(
-                                name=name,
-                                image=image,
-                                command=command,
-                                tty=True,
-                                stdin=True,
-                            )
-                        ],
+                        containers=[container],
                         restart_policy="Never",
-                        volumes=[
-                            client.V1Volume(
-                                name="data",
-                                persistent_volume_claim=client.V1PersistentVolumeClaimVolumeSource(
-                                    claim_name=app_conf.local_pvc_name
-                                )
-                            )
-                        ]
+                        volumes=volumes
                     )
                 ),
                 backoff_limit=0,
@@ -105,13 +151,32 @@ class JobMan:
                 # sub_path=f"{repo}/{branch}"
             )
         ]
+        
+        # Check for configmap in job config and ensure it exists
+        job_config = self.job_configs.get(job_type)
+        if job_config and "configmap" in job_config:
+            cm_data = {}
+            for path, content in job_config["configmap"].items():
+                filename = os.path.basename(path)
+                cm_data[filename] = content
+            self.ensure_configmap(job_type, cm_data)
+            
+            # The mounts inside the container definition in init_job_object are for the base definition. 
+            # When we access job.spec.template.spec.containers[0], we need to make sure we preserve existing mounts 
+            # (which presumably includes the configmap mounts we added in init_job_object)
+            if pod_template.containers[0].volume_mounts:
+                volume_mounts.extend(pod_template.containers[0].volume_mounts)
+
         if additional_volume_mounts:
             for v in additional_volume_mounts:
                 volume_mounts.append(client.V1VolumeMount(
                     name=v[0],
                     mount_path=v[1]
                 ))
-        pod_template.containers[0].volume_mounts = volume_mounts
+        
+        # De-duplicate mounts by mount_path just in case
+        unique_mounts = {vm.mount_path: vm for vm in volume_mounts}
+        pod_template.containers[0].volume_mounts = list(unique_mounts.values())
 
         api = client.BatchV1Api()
         logger.info(f"removing previous jobs {job_name} ")

@@ -111,10 +111,9 @@ async def download_files(repo: str, branch: str, extensions: List = None, exclud
             if response.status != 200:
                 logger.error(f"Error getting file list")
                 raise Exception(f"Error getting file")
-
             results = await response.json()
             has_more = results["pagination"]["has_more"]
-            offset += results["pagination"]["next_offset"]
+            offset = results["pagination"]["next_offset"]
             all_files += list([x['path'] for x in results["results"]])
         base_dir = os.path.join(config.local_data_dir, repo, branch)
         if os.path.exists(base_dir):
@@ -375,11 +374,14 @@ if __name__ == '__main__':
     import asyncio
     errors = []
     skip_list = [] #['ubergraph', 'wikidata', 'sem-open-alex-kg']
-    for kg in kgs:
-        if kg.frink_options and kg.frink_options.lakefs_repo not in skip_list:
-            print(f'***** {kg.frink_options.lakefs_repo} ****')
-            err = asyncio.run(download_file_from_latest_tag(kg.frink_options.lakefs_repo, "nt/graph.nt.gz", "local"))
-            errors.append(err)
-            print("*8888***"*10)
-         # upload_files("test-hook-repo", root_branch= "main", local_files=[('/home/kebedey/projects/frink/kace/README.MD', 'test_file')]))
-    print([x for x in errors if x])
+    # for kg in kgs:
+    #     if kg.frink_options and kg.frink_options.lakefs_repo not in skip_list:
+    #         print(f'***** {kg.frink_options.lakefs_repo} ****')
+    #         err = asyncio.run(download_file_from_latest_tag(kg.frink_options.lakefs_repo, "nt/graph.nt.gz", "local"))
+    #         errors.append(err)
+    #         print("*8888***"*10)
+    #      # upload_files("test-hook-repo", root_branch= "main", local_files=[('/home/kebedey/projects/frink/kace/README.MD', 'test_file')]))
+    # print([x for x in errors if x])
+    asyncio.run(
+        download_files("gene-expression-atlas-okn", "main")
+    )

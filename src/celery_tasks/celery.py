@@ -84,6 +84,37 @@ def create_hdt_conversion_job(action_payload,
     else:
         hdt_path = working_dir + '/' + hdt_path
 
+    # Run VOID description job on the HDT file
+    void_job_name = job_name + '-void'
+    void_input = hdt_path + '/graph.hdt'
+    void_output = hdt_path + '/void.ttl'
+    dataset_uri = f'https://purl.org/okn/frink/kg/{kg_title}'
+    job.run_job(
+        job_type="void-job",
+        job_name=void_job_name,
+        repo=lakefs_payload.repository_id,
+        branch=lakefs_payload.branch_id,
+        args=[
+            void_input,
+            "--dataset-uri", dataset_uri,
+            "-o", void_output
+        ],
+        resources={
+            "requests": {
+                "cpu": cpu,
+                "memory": memory,
+                "ephemeral-storage": ephemeral
+            },
+            "limits": {
+                "cpu": cpu,
+                "memory": memory,
+                "ephemeral-storage": ephemeral
+            }
+        }
+    )
+    job.watch_job(job_name=void_job_name)
+    logger.info(f'VOID description job {void_job_name} finished.')
+
     doc_job_name = job_name + '-doc'
     job.run_job(
         job_name=doc_job_name,

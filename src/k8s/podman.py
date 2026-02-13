@@ -21,7 +21,7 @@ mapping = {
 }
 
 config.load_incluster_config()
-# config.load_kube_config(config_file='/mnt/c/Users/kebedey/kubeconfig/kubeconfig-sterling-kebedey-kebedey', context='kebedey')
+
 class JobMan:
     def __init__(self):
         self.job_configs = {}

@@ -1,0 +1,3 @@
+image: ghcr.io/frink-okn/void-hdt:latest
+command:
+  - void-hdt

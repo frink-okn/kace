@@ -15,8 +15,8 @@ mapping = {
     "neo4j-rdf-job": os.path.dirname(os.path.realpath(__file__)) + os.path.join(os.path.sep + "templates", "neo4j-rdf-job.yaml"),
     "neo4j-json-job": os.path.dirname(os.path.realpath(__file__)) + os.path.join(os.path.sep + "templates", "neo4j-json-job.yaml"),
     "documentation-job": os.path.dirname(os.path.realpath(__file__)) + os.path.join(os.path.sep + "templates", "documentation-job.yaml"),
-    "qlever-index-job": os.path.dirname(os.path.realpath(__file__)) + os.path.join(os.path.sep + "templates", "qlever-index-job.yaml")
-
+    "qlever-index-job": os.path.dirname(os.path.realpath(__file__)) + os.path.join(os.path.sep + "templates", "qlever-index-job.yaml"),
+    "void-job": os.path.dirname(os.path.realpath(__file__)) + os.path.join(os.path.sep + "templates", "void-description-job.yaml"),
     ## add other pods here
 }
 

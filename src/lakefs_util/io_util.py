@@ -383,5 +383,5 @@ if __name__ == '__main__':
     #      # upload_files("test-hook-repo", root_branch= "main", local_files=[('/home/kebedey/projects/frink/kace/README.MD', 'test_file')]))
     # print([x for x in errors if x])
     asyncio.run(
-        download_files("gene-expression-atlas-okn", "main")
+        download_files("biobricks-mesh-kg", "v0.0.1")
     )

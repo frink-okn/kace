@@ -1,0 +1,19 @@
+apiVersion: networking.gke.io/v1
+kind: HealthCheckPolicy
+metadata:
+  name: ldf-health-check
+spec:
+  default:
+    checkIntervalSec: 10
+    timeoutSec: 5
+    healthyThreshold: 2
+    unhealthyThreshold: 2
+    config:
+      type: HTTP
+      httpHealthCheck:
+        port: 3000       # 👈 The Container Port (NOT Service port)
+        requestPath: /ldf
+  targetRef:
+    group: ""
+    kind: Service
+    name: frink-ldf-service # 👈 Attach to your specific service

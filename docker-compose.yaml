@@ -4,10 +4,10 @@
 version: '2'
 
 services:
+  # ── Existing: Redis (Celery broker) ──
   redis:
-    image: docker.io/bitnami/redis:7.2
+    image: redis:alpine3.22
     environment:
-      # ALLOW_EMPTY_PASSWORD is recommended only for development.
       - ALLOW_EMPTY_PASSWORD=yes
       - REDIS_DISABLE_COMMANDS=FLUSHDB,FLUSHALL
     ports:
@@ -15,6 +15,60 @@ services:
     volumes:
       - 'redis_data:/bitnami/redis/data'
 
+  # ── Temporal: PostgreSQL persistence ──
+  temporal-postgresql:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: temporal
+      POSTGRES_PASSWORD: temporal
+      POSTGRES_DB: temporal
+    volumes:
+      - temporal_pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U temporal"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # ── Temporal: Server (auto-setup creates DB schemas on first start) ──
+  temporal:
+    image: temporalio/auto-setup:latest
+    depends_on:
+      temporal-postgresql:
+        condition: service_healthy
+    environment:
+      - DB=postgres12
+      - DB_PORT=5432
+      - POSTGRES_USER=temporal
+      - POSTGRES_PWD=temporal
+      - POSTGRES_SEEDS=temporal-postgresql
+    ports:
+      - '7233:7233'
+
+  # ── Temporal: Web UI ──
+  temporal-ui:
+    image: temporalio/ui:latest
+    depends_on:
+      - temporal
+    environment:
+      - TEMPORAL_ADDRESS=temporal:7233
+      - TEMPORAL_CORS_ORIGINS=http://localhost:3000
+    ports:
+      - '8080:8080'
+
+  # ── Temporal: Admin Tools (tctl CLI, optional) ──
+  temporal-admin-tools:
+    image: temporalio/admin-tools:latest
+    depends_on:
+      - temporal
+    environment:
+      - TEMPORAL_ADDRESS=temporal:7233
+      - TEMPORAL_CLI_ADDRESS=temporal:7233
+    stdin_open: true
+    tty: true
+
 volumes:
   redis_data:
+    driver: local
+  temporal_pg_data:
     driver: local

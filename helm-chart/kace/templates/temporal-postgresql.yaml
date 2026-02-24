@@ -1,0 +1,124 @@
+{{- if and .Values.temporal.enabled .Values.temporal_pg.internal }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "kace.fullname" . }}-temporal-pg
+  labels:
+    {{- include "kace.labels" . | nindent 4 }}
+    app.kubernetes.io/component: temporal-postgresql
+spec:
+  type: ClusterIP
+  ports:
+    - port: 5432
+      targetPort: 5432
+      protocol: TCP
+      name: postgresql
+  selector:
+    {{- include "kace.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: temporal-postgresql
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "kace.fullname" . }}-temporal-pg
+  labels:
+    {{- include "kace.labels" . | nindent 4 }}
+    app.kubernetes.io/component: temporal-postgresql
+spec:
+  accessModes:
+    - ReadWriteOnce
+  {{- if .Values.temporal_pg.storageClass }}
+  storageClassName: {{ .Values.temporal_pg.storageClass }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.temporal_pg.storage }}
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "kace.fullname" . }}-temporal-pg
+  labels:
+    {{- include "kace.labels" . | nindent 4 }}
+    app.kubernetes.io/component: temporal-postgresql
+spec:
+  serviceName: {{ include "kace.fullname" . }}-temporal-pg
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "kace.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: temporal-postgresql
+  template:
+    metadata:
+      labels:
+        {{- include "kace.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: temporal-postgresql
+    spec:
+      containers:
+        - name: postgresql
+          image: {{ .Values.temporal_pg.image }}
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 5432
+              name: postgresql
+          env:
+            - name: POSTGRES_USER
+              value: {{ .Values.temporal_pg.user | quote }}
+            {{- if .Values.temporal_pg.existingSecret }}
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.temporal_pg.existingSecret }}
+                  key: {{ .Values.temporal_pg.secretKey | default "password" }}
+            {{- else }}
+            - name: POSTGRES_PASSWORD
+              value: {{ .Values.temporal_pg.password | quote }}
+            {{- end }}
+            - name: POSTGRES_DB
+              value: "temporal"
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+            - name: init-scripts
+              mountPath: /docker-entrypoint-initdb.d
+          resources:
+            {{- toYaml .Values.temporal_pg.resources | nindent 12 }}
+          readinessProbe:
+            exec:
+              command:
+                - pg_isready
+                - -U
+                - {{ .Values.temporal_pg.user | quote }}
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            exec:
+              command:
+                - pg_isready
+                - -U
+                - {{ .Values.temporal_pg.user | quote }}
+            initialDelaySeconds: 30
+            periodSeconds: 10
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ include "kace.fullname" . }}-temporal-pg
+        - name: init-scripts
+          configMap:
+            name: {{ include "kace.fullname" . }}-temporal-pg-init
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "kace.fullname" . }}-temporal-pg-init
+  labels:
+    {{- include "kace.labels" . | nindent 4 }}
+data:
+  init-visibility-db.sql: |
+    -- Create the visibility database for Temporal
+    SELECT 'CREATE DATABASE temporal_visibility OWNER {{ .Values.temporal_pg.user }}'
+    WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'temporal_visibility')\gexec
+{{- end }}

@@ -14,7 +14,6 @@ logger = LoggingUtil.init_logging("fuseki-k8s-man")
 
 config.load_incluster_config()
 
-
 class ServerDeploymentManager:
     def __init__(self, templates_dir, namespace):
         logger.info("Loading templates from {}".format(templates_dir))

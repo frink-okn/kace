@@ -4,6 +4,9 @@
 
 replicaCount: 1
 
+# Worker mode: "celery" (default) or "temporal"
+workerMode: "celery"
+
 image:
   repository: containers.renci.org/frink/kace
   pullPolicy: Always
@@ -83,6 +86,7 @@ tolerations: []
 
 affinity: {}
 
+# Celery Redis sidecar (only used when workerMode: celery)
 redis:
   image:
     repository: docker.io/redis
@@ -97,6 +101,38 @@ redis:
       memory: 128Mi
       ephemeral-storage: 20Mi
 
+# Temporal worker resources (only used when workerMode: temporal)
+temporal_worker:
+  resources:
+    limits:
+      cpu: 1
+      memory: 2Gi
+      ephemeral-storage: 100Mi
+    requests:
+      cpu: 100m
+      memory: 256Mi
+      ephemeral-storage: 20Mi
+
+# PostgreSQL for Temporal
+temporal_pg:
+  internal: true                # true = deploy StatefulSet, false = use external
+  image: postgres:16-alpine
+  storage: 5Gi
+  storageClass: ""
+  user: temporal
+  password: "temporal"          # change in production or use existingSecret
+  existingSecret: ""            # K8s secret name (must have key "password")
+  secretKey: "password"
+  # External PG settings (used when internal: false)
+  host: ""
+  port: 5432
+  resources:
+    limits:
+      cpu: 500m
+      memory: 512Mi
+    requests:
+      cpu: 100m
+      memory: 128Mi
 
 app_config:
   lakefs_url: "http://lakefs"
@@ -112,3 +148,45 @@ app_config:
   shared_pvc_name: ""
   local_pvc_size: 20Gi
   local_pvc_storage_class: ""
+  # Temporal config (used when workerMode: temporal)
+  temporal_host: ""             # auto-detected if empty
+  temporal_namespace: "default"
+
+# Temporal server subchart
+temporal:
+  enabled: false
+  server:
+    config:
+      persistence:
+        numHistoryShards: 512
+        datastores:
+          default:
+            sql:
+              pluginName: postgres12_pgx
+              databaseName: temporal
+              # Format: <release-fullname>-temporal-pg:<port>
+              # Override if your release name != "kace" or using external PG
+              connectAddr: "kace-temporal-pg:5432"
+              connectProtocol: "tcp"
+              user: temporal
+              password: temporal
+              maxConns: 20
+              maxIdleConns: 20
+          visibility:
+            sql:
+              pluginName: postgres12_pgx
+              databaseName: temporal_visibility
+              connectAddr: "kace-temporal-pg:5432"
+              connectProtocol: "tcp"
+              user: temporal
+              password: temporal
+              maxConns: 20
+              maxIdleConns: 20
+      namespaces:
+        create: true
+        namespace:
+          - name: default
+            retention: 30d
+  web:
+    enabled: true
+

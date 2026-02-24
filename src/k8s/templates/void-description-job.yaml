@@ -1,3 +1,3 @@
-image: ghcr.io/frink-okn/void-hdt:latest
+image: containers.renci.org/frink/void:test
 command:
   - void-hdt

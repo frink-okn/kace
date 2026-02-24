@@ -70,3 +70,25 @@ Define env vars
   value: {{ $v | quote }}
 {{- end -}}
 {{- end -}}
+
+{{/*
+Temporal frontend host (for the worker to connect to)
+*/}}
+{{- define "kace.temporalHost" -}}
+{{- if .Values.app_config.temporal_host -}}
+{{- .Values.app_config.temporal_host -}}
+{{- else -}}
+{{- printf "%s-temporal-frontend:%s" .Release.Name "7233" -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+PostgreSQL host for Temporal (internal StatefulSet or external)
+*/}}
+{{- define "kace.temporalPgHost" -}}
+{{- if .Values.temporal_pg.internal -}}
+{{- printf "%s-temporal-pg" (include "kace.fullname" .) -}}
+{{- else -}}
+{{- .Values.temporal_pg.host -}}
+{{- end -}}
+{{- end -}}

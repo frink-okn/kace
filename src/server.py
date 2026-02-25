@@ -48,6 +48,7 @@ async def upload_hdt_callback(action_model: LakefsMergeActionModel,
                 (f'{hdt_location}/graph.hdt', 'hdt'),
                 (f'{hdt_location}/graph.hdt.index.v1-1', 'hdt'),
                 (f'{nt_location}/graph.nt.gz', 'nt'),
+                (f'{nt_location}/void.ttl', 'void'),
             ] if converted_hdt else []
         )
 

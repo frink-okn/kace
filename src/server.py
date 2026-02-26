@@ -215,13 +215,20 @@ async def convert_to_hdt(action_model: LakefsMergeActionModel,
 @app.post("/handle_tag_creation")
 async def handle_tag_creation(background_tasks: BackgroundTasks,
                               kg_name: str = Query(None),
+
                               cpu: str = Query(None),
                               memory: str = Query(None),
                               hdt_path: str = Query('hdt/'),
                               action_model: LakefTagCreationModel=Body(...)
                               ):
-    kg_config = (await KGConfig.from_git()).get_by_repo(action_model.repository_id)
-    kg_name = kg_config.shortname
+    if not kg_name:
+        kg_config = (await KGConfig.from_git()).get_by_repo(action_model.repository_id)
+        kg_name = kg_config.shortname
+    else:
+        kg_config = KG(description='')
+        kg_config.shortname = kg_name
+
+
     background_tasks.add_task(create_deployment_task, cpu, memory, hdt_path, action_model, kg_config)
     slack_canary.notify_event(
         event_name="Tag is created , proceeding to deployment",

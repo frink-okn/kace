@@ -103,11 +103,41 @@ if __name__ == "__main__":
 
     # Create the KGConfig instance from the dict
     config = asyncio.run(KGConfig.from_git())
+    user_names = set()
+    for kg in config.kgs:
+        for c in kg.contacts:
+            if c.github:
+                for g in c.github:
+                    user_names.add(g)
 
-    # Now you can lookup KG items by their lakefs_repo value
-    print(config.get_by_repo("urban-flooding-open-knowledge-network"))
-    bioheath = config.get_by_repo("biohealth")
-    print(config.get_by_repo("biohealth").frink_options)
-    print(bioheath.emails)
+    for u in user_names:
+        print(u)
+
+
+    # # Now you can lookup KG items by their lakefs_repo value
+    # repos = ['securechainkg',
+    #     'geoconnex',
+    #     'spatialkg',
+    #     'hydrologykg',
+    #     'dreamkg',
+    #     'scales',
+    #     'spoke-genelab',
+    #     'spoke-okn',
+    #     'biobricks-aopwiki',
+    #     'biobricks-mesh'
+    # ]
+    # text = ""
+    # for r in repos:
+    #     for c in config.kgs:
+    #         if c.shortname == r:
+    #             options = c.frink_options
+    #             if options:
+    #                 text += " " + options.lakefs_repo
+    #
+    # print(text)
+    # print(config.get_by_repo("gene-expression-atlas-okn"))
+    # bioheath = config.get_by_repo("nde")
+    # print(config.get_by_repo("nde").frink_options)
+    # print(bioheath.emails)
     # print(config.get_by_repo("dream-kg").contact.emil)
 

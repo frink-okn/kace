@@ -30,6 +30,8 @@ class Config(BaseModel):
     gh_token: str
     kg_config_url: str
     stop_email: str
+    temporal_host: str
+    temporal_namespace: str
 
 
 
@@ -57,5 +59,7 @@ config = Config(
     smtp_port=int(os.environ.get('SMTP_PORT', 25)),
     gh_token=os.environ.get('GH_TOKEN', ''),
     kg_config_url=os.environ.get('KG_CONFIG_URL', 'https://raw.githubusercontent.com/frink-okn/okn-registry/refs/heads/main/docs/registry/kgs.yaml'),
-    stop_email=os.environ.get('STOP_EMAIL', '')
+    stop_email=os.environ.get('STOP_EMAIL', ''),
+    temporal_host=os.environ.get('TEMPORAL_HOST', 'localhost:7233'),
+    temporal_namespace=os.environ.get('TEMPORAL_NAMESPACE', 'default')
 )

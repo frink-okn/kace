@@ -1,0 +1,19 @@
+apiVersion: networking.gke.io/v1
+kind: HealthCheckPolicy
+metadata:
+  name: {{ kg_name }}-health-check
+spec:
+  default:
+    checkIntervalSec: 10
+    timeoutSec: 5
+    healthyThreshold: 2
+    unhealthyThreshold: 2
+    config:
+      type: HTTP
+      httpHealthCheck:
+        port: 3030       # 👈 The Container Port (NOT Service port)
+        requestPath: /{{ kg_name }}/sparql?query=ASK%20%7B%20%3Fs%20%3Fp%20%3Fo%20%7D
+  targetRef:
+    group: ""
+    kind: Service
+    name: frink-{{ kg_name }}-fuseki-service # 👈 Attach to your specific service

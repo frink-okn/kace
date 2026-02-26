@@ -210,6 +210,10 @@ nt_to_hdt() {
 
     [ -f "${expected_hdt}" ] || err_and_exit "HDT conversion failed: ${expected_hdt} not created"
     log "HDT created: ${expected_hdt}"
+
+    # Debug: List all files created
+    log "Files in output directory:"
+    find "${outdir}" -type f -exec ls -lh {} \; 2>&1 | while read line; do log "  $line"; done
 }
 
 hdt_to_nt() {
@@ -218,6 +222,27 @@ hdt_to_nt() {
     log "Converting HDT to NT: ${hdtfile} -> ${out_nt}"
     hdt2rdf.sh "${hdtfile}" "${out_nt}" 2>> "${REPORT_DIR}/hdt2rdf.log"
 }
+
+move_hdt() {
+    local src_hdt="$1"
+    local dest_hdt="$2"
+    
+    if [ ! -f "${src_hdt}" ]; then
+        log "Error: Source HDT ${src_hdt} not found."
+        return 1
+    fi
+    
+    mv "${src_hdt}" "${dest_hdt}"
+    log "Moved HDT: ${dest_hdt}"
+    
+    if [ -f "${src_hdt}.index.v1-1" ]; then
+        mv "${src_hdt}.index.v1-1" "${dest_hdt}.index.v1-1"
+        log "Moved HDT index: ${dest_hdt}.index.v1-1"
+    else
+        log "Warning: No index found at ${src_hdt}.index.v1-1 to move."
+    fi
+}
+
 
 combine_hdt_files() {
     local -n _src=$1; local out_hdt="$2"
@@ -283,7 +308,7 @@ combine_hdt_files() {
     local temp_hdt_dir="${HDT_TMP_DIR}/temp_combine_$$"
     mkdir -p "${temp_hdt_dir}"
     nt_to_hdt "${merged}" "${temp_hdt_dir}"
-    mv "${temp_hdt_dir}/graph.hdt" "$out_hdt"
+    move_hdt "${temp_hdt_dir}/graph.hdt" "$out_hdt"
     rm -rf "${temp_hdt_dir}"
 }
 
@@ -311,7 +336,7 @@ merge_hdt_and_text() {
         mkdir -p "${text_temp_dir}"
         nt_to_hdt "${text_nt}" "${text_temp_dir}"
         text_hdt="${HDT_TMP_DIR}/text_only.graph.hdt"
-        mv "${text_temp_dir}/graph.hdt" "${text_hdt}"
+        move_hdt "${text_temp_dir}/graph.hdt" "${text_hdt}"
         rm -rf "${text_temp_dir}"
         log "Text HDT created: ${text_hdt}"
     else
@@ -337,10 +362,10 @@ merge_hdt_and_text() {
         log "Both sources merged into ${out_hdt}"
     elif [ -n "${text_hdt}" ]; then
         log "Only text HDT available, using it as final..."
-        mv "${text_hdt}" "${out_hdt}"
+        move_hdt "${text_hdt}" "${out_hdt}"
     elif [ -n "${hdt_hdt}" ]; then
         log "Only HDT sources available, using them as final..."
-        mv "${hdt_hdt}" "${out_hdt}"
+        move_hdt "${hdt_hdt}" "${out_hdt}"
     else
         err_and_exit "No HDT produced from any source!"
     fi
@@ -348,7 +373,7 @@ merge_hdt_and_text() {
     # Step 4: Export final HDT to NT
     log "Exporting final HDT to NT..."
     tmp_nt="${RIOT_TMP_DIR}/final_combined.nt"
-    hdt2rdf.sh "${out_hdt}" > "${tmp_nt}" 2>> "${REPORT_DIR}/hdt2rdf_final.log"
+    hdt2rdf.sh "${out_hdt}" "${tmp_nt}" 2>> "${REPORT_DIR}/hdt2rdf_final.log"
 
     # FIX: Check NT was created
     if [ ! -s "${tmp_nt}" ]; then
@@ -398,7 +423,7 @@ if [ ${#TEXT_FILES[@]} -gt 0 ] && [ ${#HDT_FILES[@]} -eq 0 ]; then
     temp_dir="${HDT_TMP_DIR}/text_final_$$"
     mkdir -p "${temp_dir}"
     nt_to_hdt "${text_nt}" "${temp_dir}"
-    mv "${temp_dir}/graph.hdt" "${final_hdt}"
+    move_hdt "${temp_dir}/graph.hdt" "${final_hdt}"
     rm -rf "${temp_dir}"
 
     gzip -c "${text_nt}" > "${final_ntgz}"

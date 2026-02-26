@@ -33,6 +33,8 @@ class SlackCanary:
         """
         message = f"*Event Triggered*: {event_name}\n"
         for key, value in kwargs.items():
+            if isinstance(value, list):
+                value = value[10:]
             message += f"> *{key}*: {value}\n"
         self.send_message(message)
 

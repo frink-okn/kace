@@ -1,4 +1,5 @@
 import time
+import asyncio
 
 import kubernetes.client.exceptions
 from kubernetes import client, config, watch
@@ -15,13 +16,13 @@ mapping = {
     "neo4j-rdf-job": os.path.dirname(os.path.realpath(__file__)) + os.path.join(os.path.sep + "templates", "neo4j-rdf-job.yaml"),
     "neo4j-json-job": os.path.dirname(os.path.realpath(__file__)) + os.path.join(os.path.sep + "templates", "neo4j-json-job.yaml"),
     "documentation-job": os.path.dirname(os.path.realpath(__file__)) + os.path.join(os.path.sep + "templates", "documentation-job.yaml"),
+    "qlever-index-job": os.path.dirname(os.path.realpath(__file__)) + os.path.join(os.path.sep + "templates", "qlever-index-job.yaml"),
     "void-job": os.path.dirname(os.path.realpath(__file__)) + os.path.join(os.path.sep + "templates", "void-description-job.yaml"),
-
     ## add other pods here
 }
 
 config.load_incluster_config()
-# config.load_kube_config(config_file='/mnt/c/Users/kebedey/kubeconfig/kubeconfig-sterling-kebedey-kebedey', context='kebedey')
+# config.load_kube_config('/mnt/c/Users/kebedey/kubeconfig/kubeconfig-sterling-kebedey-kebedey')
 class JobMan:
     def __init__(self):
         self.job_configs = {}
@@ -39,9 +40,70 @@ class JobMan:
             job_objects[job_type] = self.init_job_object(name=job_type, **self.job_configs[job_type])
         return job_objects
 
+    def ensure_configmap(self, name, data: Dict[str, str]):
+        core_v1 = client.CoreV1Api()
+        configmap_name = f"{name}-config"
+        metadata = client.V1ObjectMeta(
+            name=configmap_name,
+            namespace=self.namespace,
+        )
+        body = client.V1ConfigMap(
+            api_version="v1",
+            kind="ConfigMap",
+            metadata=metadata,
+            data=data
+        )
+        try:
+            core_v1.read_namespaced_config_map(name=configmap_name, namespace=self.namespace)
+            # update
+            logger.info(f"ConfigMap {configmap_name} exists, patching...")
+            core_v1.patch_namespaced_config_map(name=configmap_name, namespace=self.namespace, body=body)
+        except client.exceptions.ApiException as e:
+            if e.status == 404:
+                logger.info(f"Creating ConfigMap {configmap_name}...")
+                core_v1.create_namespaced_config_map(namespace=self.namespace, body=body)
+            else:
+                logger.error(f"Failed to ensure ConfigMap {configmap_name}: {e}")
+                raise e
+
     @staticmethod
-    def init_job_object(name: str, image: str, command: List[str]) -> client.V1Job:
+    def init_job_object(name: str, image: str, command: List[str], configmap: Dict[str, str] = None) -> client.V1Job:
         # create the pod
+        volumes = [
+            client.V1Volume(
+                name="data",
+                persistent_volume_claim=client.V1PersistentVolumeClaimVolumeSource(
+                    claim_name=app_conf.local_pvc_name
+                )
+            )
+        ]
+        
+        container_mounts = []
+        if configmap:
+             volumes.append(client.V1Volume(
+                 name="config-volume",
+                 config_map=client.V1ConfigMapVolumeSource(
+                     name=f"{name}-config"
+                 )
+             ))
+             for path, content in configmap.items():
+                 filename = os.path.basename(path)
+                 container_mounts.append(client.V1VolumeMount(
+                     name="config-volume",
+                     mount_path=path,
+                     sub_path=filename
+                 ))
+
+        container = client.V1Container(
+            name=name,
+            image=image,
+            command=command,
+            tty=True,
+            stdin=True,
+        )
+        if container_mounts:
+            container.volume_mounts = container_mounts
+
         return client.V1Job(
             api_version="batch/v1",
             kind="Job",
@@ -49,24 +111,9 @@ class JobMan:
             spec=client.V1JobSpec(
                 template=client.V1PodTemplateSpec(
                     spec=client.V1PodSpec(
-                        containers=[
-                            client.V1Container(
-                                name=name,
-                                image=image,
-                                command=command,
-                                tty=True,
-                                stdin=True,
-                            )
-                        ],
+                        containers=[container],
                         restart_policy="Never",
-                        volumes=[
-                            client.V1Volume(
-                                name="data",
-                                persistent_volume_claim=client.V1PersistentVolumeClaimVolumeSource(
-                                    claim_name=app_conf.local_pvc_name
-                                )
-                            )
-                        ]
+                        volumes=volumes
                     )
                 ),
                 backoff_limit=0,
@@ -74,7 +121,7 @@ class JobMan:
         )
 
     def run_job(self, job_type, job_name, repo: str, branch: str, command: List[str] = None, args: List[str] = None,
-                resources=None, env_vars=None):
+                resources=None, env_vars=None, additional_volume_mounts=None):
         if env_vars is None:
             env_vars = dict()
         job: kubernetes.client.V1Job = self.job_objects[job_type]
@@ -92,6 +139,11 @@ class JobMan:
             logger.info("pod args {}".format(args))
             pod_template.containers[0].args = args
         if resources:
+            # K8s API requires quantities as strings; coerce in case
+            # values arrive as integers (e.g. after JSON round-trip via Temporal)
+            for section in ("requests", "limits"):
+                if section in resources:
+                    resources[section] = {k: str(v) for k, v in resources[section].items()}
             resources = client.V1ResourceRequirements(**resources)
             pod_template.containers[0].resources = resources
         if env_vars:
@@ -105,12 +157,87 @@ class JobMan:
                 # sub_path=f"{repo}/{branch}"
             )
         ]
-        pod_template.containers[0].volume_mounts = volume_mounts
+        
+        # Check for configmap in job config and ensure it exists
+        job_config = self.job_configs.get(job_type)
+        if job_config and "configmap" in job_config:
+            cm_data = {}
+            for path, content in job_config["configmap"].items():
+                filename = os.path.basename(path)
+                cm_data[filename] = content
+            self.ensure_configmap(job_type, cm_data)
+            
+            # The mounts inside the container definition in init_job_object are for the base definition. 
+            # When we access job.spec.template.spec.containers[0], we need to make sure we preserve existing mounts 
+            # (which presumably includes the configmap mounts we added in init_job_object)
+            if pod_template.containers[0].volume_mounts:
+                volume_mounts.extend(pod_template.containers[0].volume_mounts)
+
+        if additional_volume_mounts:
+            for v in additional_volume_mounts:
+                volume_mounts.append(client.V1VolumeMount(
+                    name=v[0],
+                    mount_path=v[1]
+                ))
+        
+        # De-duplicate mounts by mount_path just in case
+        unique_mounts = {vm.mount_path: vm for vm in volume_mounts}
+        pod_template.containers[0].volume_mounts = list(unique_mounts.values())
 
         api = client.BatchV1Api()
         logger.info(f"removing previous jobs {job_name} ")
         self.remove_job(job_name)
         return api.create_namespaced_job(namespace=self.namespace, body=job)
+
+    def _get_pod_logs_for_job(self, job_name, tail_lines=100):
+        """Fetch logs and status from all pods belonging to a job.
+
+        Returns a formatted string with pod status, exit codes, and tail logs.
+        """
+        core_v1 = client.CoreV1Api()
+        output_parts = []
+        try:
+            pods = core_v1.list_namespaced_pod(
+                namespace=self.namespace,
+                label_selector=f"job-name={job_name}"
+            )
+            for pod in pods.items:
+                pod_name = pod.metadata.name
+                phase = pod.status.phase
+                part = [f"\n--- Pod: {pod_name} (phase: {phase}) ---"]
+
+                # Container exit codes and reasons
+                if pod.status.container_statuses:
+                    for cs in pod.status.container_statuses:
+                        terminated = cs.state.terminated
+                        if terminated:
+                            part.append(
+                                f"  Container '{cs.name}': exit_code={terminated.exit_code}, "
+                                f"reason={terminated.reason}, message={terminated.message}"
+                            )
+                        elif cs.state.waiting:
+                            part.append(
+                                f"  Container '{cs.name}': waiting, "
+                                f"reason={cs.state.waiting.reason}, message={cs.state.waiting.message}"
+                            )
+
+                # Pod logs
+                try:
+                    logs = core_v1.read_namespaced_pod_log(
+                        name=pod_name,
+                        namespace=self.namespace,
+                        tail_lines=tail_lines
+                    )
+                    part.append(f"  Logs (last {tail_lines} lines):\n{logs}")
+                except client.exceptions.ApiException:
+                    part.append("  Logs: <unavailable>")
+
+                output_parts.append("\n".join(part))
+
+        except client.exceptions.ApiException as e:
+            output_parts.append(f"Failed to fetch pod info for job '{job_name}': {e}")
+
+        return "\n".join(output_parts) if output_parts else "<no pods found>"
 
     def watch_job(self, job_name, poll_interval=5):
         """
@@ -122,7 +249,7 @@ class JobMan:
             poll_interval (int): Seconds to wait between successive status checks.
 
         Raises:
-            Exception: If the Job fails.
+            Exception: If the Job fails. Includes pod logs and exit codes.
         """
         batch_v1 = client.BatchV1Api()
 
@@ -147,10 +274,50 @@ class JobMan:
 
             # Consider the Job failed if the number of failures reaches the backoff limit.
             if failed > backoff_limit:
-                logger.error(f"Job '{job_name}' failed after {failed} attempts.")
-                raise Exception(f"Job '{job_name}' failed.")
+                pod_info = self._get_pod_logs_for_job(job_name)
+                logger.error(f"Job '{job_name}' failed after {failed} attempts.\n{pod_info}")
+                raise Exception(f"Job '{job_name}' failed after {failed} attempts.\n{pod_info}")
 
             time.sleep(poll_interval)
+
+    async def async_watch_job(self, job_name, poll_interval=5):
+        """
+        Async version of watch_job. Uses asyncio.sleep instead of time.sleep
+        so it can be awaited without blocking the event loop.
+
+        Args:
+            job_name (str): The name of the Job.
+            poll_interval (int): Seconds to wait between successive status checks.
+
+        Raises:
+            Exception: If the Job fails. Includes pod logs and exit codes.
+        """
+        batch_v1 = client.BatchV1Api()
+
+        while True:
+            try:
+                job = batch_v1.read_namespaced_job(name=job_name, namespace=self.namespace)
+            except client.exceptions.ApiException as e:
+                logger.error(f"Failed to fetch Job '{job_name}': {e}")
+                raise Exception(f"Failed to fetch Job '{job_name}': {e} , likely the job was never created.")
+
+            succeeded = job.status.succeeded or 0
+            failed = job.status.failed or 0
+            backoff_limit = job.spec.backoff_limit if job.spec.backoff_limit is not None else 6
+
+            logger.info(f"Job '{job_name}' status: succeeded={succeeded}, failed={failed}")
+
+            if succeeded > 0:
+                logger.info(f"Job '{job_name}' completed successfully.")
+                return
+
+            if failed > backoff_limit:
+                pod_info = self._get_pod_logs_for_job(job_name)
+                logger.error(f"Job '{job_name}' failed after {failed} attempts.\n{pod_info}")
+                raise Exception(f"Job '{job_name}' failed after {failed} attempts.\n{pod_info}")
+
+            await asyncio.sleep(poll_interval)
+
 
     def remove_job(self, name):
         """ Remove a job. This call is a blocking call, it will check and wait until the job is delete.

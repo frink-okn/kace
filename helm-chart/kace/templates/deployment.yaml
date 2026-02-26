@@ -65,6 +65,7 @@ spec:
             - mountPath: {{ .Values.app_config.shared_data_dir }}
               name: shared
             {{ end }}
+        {{- if eq .Values.workerMode "celery" }}
         - name: {{ .Chart.Name}}-celery-worker
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
@@ -110,6 +111,40 @@ spec:
               protocol: TCP
           resources:
             {{- toYaml .Values.redis.resources | nindent 12 }}
+        {{- end }}
+        {{- if eq .Values.workerMode "temporal" }}
+        - name: {{ .Chart.Name }}-temporal-worker
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command:
+            - 'python'
+            - '-m'
+            - 'temporal_app.worker'
+          env:
+            {{ include "kace.env_variables" . | nindent 12 }}
+            - name: K8S_NAMESPACE
+              value: {{ .Release.Namespace }}
+            - name: TEMPORAL_HOST
+              value: {{ include "kace.temporalHost" . | quote }}
+            - name: TEMPORAL_NAMESPACE
+              value: {{ .Values.app_config.temporal_namespace | default "default" | quote }}
+          resources:
+            {{- toYaml .Values.temporal_worker.resources | nindent 12 }}
+          volumeMounts:
+            - mountPath: {{ .Values.app_config.local_data_dir }}
+            {{ if .Values.app_config.local_pvc_create }}
+              name: local
+            {{ else }}
+              name: shared
+              subPath: {{ .Values.app_config.local_pvc_subpath }}
+            {{ end }}
+            {{ if .Values.app_config.shared_pvc_name }}
+            - mountPath: {{ .Values.app_config.shared_data_dir }}
+              name: shared
+            {{ end }}
+        {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

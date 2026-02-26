@@ -1,0 +1,18 @@
+apiVersion: gateway.networking.k8s.io/v1beta1
+kind: HTTPRoute
+metadata:
+  name: frink-ldf-route
+spec:
+  parentRefs:
+  - name: ingress-gateway
+    namespace: ingress
+  hostnames:
+  - "{{ host_name }}"
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /ldf
+    backendRefs:
+    - name: frink-ldf-service
+      port: 80

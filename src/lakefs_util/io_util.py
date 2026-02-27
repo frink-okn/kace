@@ -1,7 +1,9 @@
+import json
 import os, shutil
 import lakefs.client
 import aiohttp
 import lakefs_sdk.configuration
+from lakefs_sdk.exceptions import BadRequestException
 import asyncio
 from config import config
 from log_util import LoggingUtil
@@ -277,12 +279,18 @@ async def upload_files(repo: str, root_branch: str = "main", local_files: list[t
                     logger.info(f"Uploaded {path}")
     if len(local_files):
         # Commit
-        client.commits_api.commit(repository=repo, branch=stable_branch_name, commit_creation={
-            "message": f"Uploads for version {latest_tag}",
-            "metadata": {
-                "key": "value"
-            }
-        })
+        try:
+            client.commits_api.commit(repository=repo, branch=stable_branch_name, commit_creation={
+                "message": f"Uploads for version {latest_tag}",
+                "metadata": {
+                    "key": "value"
+                }
+            })
+        except BadRequestException as e:
+            b = json.loads(e.body)
+            if b['message'] != "commit: no changes":
+                raise e
+
 
     return {
         "stable_branch_name": stable_branch_name,

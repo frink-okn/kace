@@ -18,7 +18,8 @@ from .activities import (
     cleanup_local_files,
     send_review_email,
     prepare_qlever_job_specs,
-    get_spider_config
+    get_spider_config,
+    create_local_dir
 )
 
 from .workflows import (
@@ -60,7 +61,8 @@ async def main():
             cleanup_local_files,
             send_review_email,
             prepare_qlever_job_specs,
-            get_spider_config
+            get_spider_config,
+            create_local_dir
         ],
     )
     

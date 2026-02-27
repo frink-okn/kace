@@ -20,19 +20,21 @@ async def main():
 
     # Start a test HDTConversionWorkflow
     handle = await client.start_workflow(
-        "Neo4jConversionWorkflow",  # workflow name (string form)
+        "HDTConversionWorkflow",  # workflow name (string form)
         args=[
             # action_payload
             {
                 "hook_id": "test-hook",
-                "repository_id": "spoke-genelab-kg",
+                "repository_id": "climatepub4-kg",
                 "branch_id": "main",
                 "commit_id": "2cff306f9bf8495b6c28cd4776cf799c0dc432015b9f6dbe1c8410e972049ec9",
                 "source_ref": "2cff306f9bf8495b6c28cd4776cf799c0dc432015b9f6dbe1c8410e972049ec9",
             },
-            "https://raw.githubusercontent.com/frink-okn/okn-registry/refs/heads/main/docs/registry/neo4j-conf/spoke-genelab.yaml"
+            'path-1',
+            'title'
+            # "https://raw.githubusercontent.com/frink-okn/okn-registry/refs/heads/main/docs/registry/neo4j-conf/spoke-genelab.yaml"
         ],
-        id="test-neo4j-workflow-001",
+        id="test-hdtc-001",
         task_queue="frink-temporal-queue",
     )
 

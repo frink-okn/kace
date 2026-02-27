@@ -1,0 +1,6 @@
+image: containers.renci.org/frink/hdtc:v0.01
+command:
+  - hdtc
+
+
+

@@ -317,3 +317,9 @@ async def get_spider_config() -> dict:
         "port": config.spider_port
     }
 
+@activity.defn
+async def create_local_dir(dir_path: str) -> None:
+    """Create a local directory on the worker if it does not exist."""
+    logger.info(f"Creating local directory: {dir_path}")
+    os.makedirs(dir_path, exist_ok=True)
+

@@ -1,3 +1,5 @@
+import os
+
 from temporalio import workflow
 from temporalio.common import RetryPolicy
 from datetime import timedelta
@@ -18,6 +20,7 @@ with workflow.unsafe.imports_passed_through():
         send_review_email,
         prepare_qlever_job_specs,
         get_spider_config,
+        create_local_dir,
         KG,
         app_config
     )
@@ -75,18 +78,36 @@ class HDTConversionWorkflow:
                 retry_policy=NO_RETRY
             )
 
-        # 3. Run HDT conversion job
+        # 3. Run HDT and NT conversion jobs
         if convert_to_hdt:
+            # 3.1 HDT conversion job
+            hdt_convert_args = ['create'] + [working_dir + '/' + x for x in files_list ] + [
+                '--temp-dir',
+                working_dir + '/hdt-tmp/',
+                '--index',
+                '--memory-limit',
+                mem_size,
+                '-v',
+                '--output',
+                working_dir + '/hdt/graph.hdt'
+            ]
+
+            await workflow.execute_activity(
+                create_local_dir,
+                args=[local_dir + '/hdt'],
+                start_to_close_timeout=timedelta(minutes=1),
+                retry_policy=NO_RETRY
+            )
             await workflow.execute_activity(
                 run_k8s_job,
                 args=[
-                    "hdt-job",
+                    "hdtc-job",
                     job_name,
                     repo_id,
                     branch_id,
-                    None,
-                    files_list,
-                    {
+                    None, # command override
+                    hdt_convert_args, # command args
+                    { # resources
                         "requests": {"cpu": str(cpu), "memory": memory, "ephemeral-storage": ephemeral},
                         "limits": {"cpu": str(cpu), "memory": memory, "ephemeral-storage": ephemeral}
                     },
@@ -103,13 +124,50 @@ class HDTConversionWorkflow:
                 start_to_close_timeout=timedelta(minutes=10),
                 retry_policy=NO_RETRY
             )
-
+            # run hdt conversion.
             await workflow.execute_activity(
                 watch_k8s_job_sync,
                 args=[job_name],
                 start_to_close_timeout=LONG_RUNNING_JOB_TIMEOUT,
                 retry_policy=NO_RETRY
             )
+
+            # 3.2 NT Merge Job (Takes the HDT as input)
+            nt_job_name = f"{job_name}-nt"
+            nt_convert_args = [f"{working_dir}/hdt/graph.hdt"]
+            
+            await workflow.execute_activity(
+                run_k8s_job,
+                args=[
+                    "nt-merge-job",
+                    nt_job_name,
+                    repo_id,
+                    branch_id,
+                    None, # command override
+                    nt_convert_args, # command args
+                    { # resources
+                        "requests": {"cpu": str(cpu), "memory": memory, "ephemeral-storage": ephemeral},
+                        "limits": {"cpu": str(cpu), "memory": memory, "ephemeral-storage": ephemeral}
+                    },
+                    {
+                        "GH_HANDLES": ",".join(kg_config.github_handles),
+                        "JAVA_OPTIONS": java_opts,
+                        "WORKING_DIR": working_dir,
+                        "REPO_NAME": repo_id,
+                        "COMMIT_ID": action_payload['source_ref'],
+                        "KG_NAME": kg_title,
+                    }
+                ],
+                start_to_close_timeout=timedelta(minutes=10),
+                retry_policy=NO_RETRY
+            )
+            await workflow.execute_activity(
+                watch_k8s_job_sync,
+                args=[nt_job_name],
+                start_to_close_timeout=LONG_RUNNING_JOB_TIMEOUT,
+                retry_policy=NO_RETRY
+            )
+
 
         # Determine HDT path
         real_hdt_path = f"{working_dir}/hdt" if convert_to_hdt else f"{working_dir}/{hdt_path}"
@@ -174,7 +232,8 @@ class HDTConversionWorkflow:
             [f"{hdt_location}/graph.hdt.index.v1-1", "hdt"],
             [f"{nt_location}/graph.nt.gz", "nt"],
             [f"{hdt_location}/void.ttl", "void"],
-        ] if convert_to_hdt else []
+        ]
+
 
         upload_result = await workflow.execute_activity(
             upload_output_files,
@@ -183,10 +242,24 @@ class HDTConversionWorkflow:
             retry_policy=NO_RETRY
         )
 
+
+        void_repo, void_branch = app_config.void_repo.split(':')
+        files = [
+            [f"{hdt_location}/void.ttl", f"{repo_id}"]
+        ]
+        upload_void = await workflow.execute_activity(
+            upload_output_files,
+            args=[void_repo, branch_id, files],
+            start_to_close_timeout = timedelta(hours=2),
+            retry_policy = NO_RETRY
+        )
+
+
         # 7. Notify
         await workflow.execute_activity(
             notify_slack,
-            f"✔️ HDT & NT file uploaded for {kg_title}. Branch: {upload_result['stable_branch_name']}",
+            f"✔️ HDT & NT file uploaded for {kg_title}. Branch: {upload_result['stable_branch_name']}"
+            f"Void uploaded to {app_config.lakefs_url}/repositories/{void_repo}/objects?ref={void_repo}",
             start_to_close_timeout=timedelta(minutes=1),
             retry_policy=NO_RETRY
         )
@@ -204,13 +277,6 @@ class HDTConversionWorkflow:
                 start_to_close_timeout=timedelta(minutes=2),
                 retry_policy=NO_RETRY
             )
-
-        await workflow.execute_activity(
-            notify_slack,
-            f"✔️ Conversion and Documentation complete for {kg_title}. Branch: {upload_result['stable_branch_name']}",
-            start_to_close_timeout=timedelta(minutes=1),
-            retry_policy=NO_RETRY
-        )
 
         # 8. Cleanup local files
         await workflow.execute_activity(

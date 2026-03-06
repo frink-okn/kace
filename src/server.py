@@ -268,7 +268,7 @@ async def create_neo4j_HDT_conversion_task(action_model: LakefsMergeActionModel)
     neo4j_json_files = await download_files(
         action_model.repository_id,
         branch=action_model.branch_id,
-        extensions=['json', 'json.gz'],
+        extensions=['json', 'json.gz', 'json.zst'],
         delete_all_files=False
     )
 

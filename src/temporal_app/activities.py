@@ -1,7 +1,7 @@
 from temporalio import activity
 from k8s.podman import JobMan
 from k8s import fuseki_server_manager, ldf_server_manager
-from lakefs_util.io_util import resolve_commit, download_file_from_latest_tag, download_files, upload_files, clean_up_files
+from lakefs_util.io_util import resolve_commit, download_file_from_latest_tag, download_files, upload_files, clean_up_files, resolve_future_tag, get_lakefs_prefix_size
 from canary.slack import slack_canary
 from canary.mail import mail_canary
 from models.lakefs_models import LakefsMergeActionModel, LakefTagCreationModel
@@ -105,6 +105,76 @@ async def deploy_ldf(kg_config: dict, lakefs_action: dict) -> None:
         annotations=annotations,
         resources=None
     )
+
+
+@activity.defn
+async def deploy_qlever(kg_config: dict, lakefs_action: dict, cpu: str = "1", memory: str = "2G", pvc_storage_size: str = "2Gi") -> None:
+    from k8s import qlever_server_manager
+    kg_config_obj = KG(**kg_config)
+    lakefs_action_obj = LakefTagCreationModel(**lakefs_action)
+    
+    kg_name = kg_config_obj.shortname
+    
+    version = lakefs_action_obj.tag_id
+    if not version and lakefs_action_obj.commit_id:
+        version = lakefs_action_obj.commit_id[:7]
+    
+    # We sanitize the version to be DNS-1123 compatible (used in PVC naming)
+    sanitized_version = str(version).replace('.', '-').replace('_', '-')
+    
+    annotations = {
+        "kg-name": kg_name,
+        "version": version,
+        "lakefs-repository": lakefs_action_obj.repository_id,
+        "commit": lakefs_action_obj.commit_id
+    }
+    resources = {
+        "requests": {"memory": memory},
+        "limits": {"memory": memory}
+    }
+    if cpu:
+        resources["limits"]["cpu"] = cpu
+        resources["requests"]["cpu"] = cpu
+
+    logger.info(f"Deploying QLever for {kg_name} version {version}")
+    
+    # Ensure standard env mappings for the template:
+    parameters = {
+        "kg_name": kg_name,
+        "version": version,
+        "pvc_name": f"frink-{kg_name}-qlever-pvc-{sanitized_version}",
+        "lakefs_url": config.lakefs_url.replace("https://", "s3://").replace("http://", "s3://"),  # s5cmd s3 url
+        "lakefs_access_key": config.lakefs_access_key,
+        "lakefs_secret_key": config.lakefs_secret_key,
+        "repository_id": lakefs_action_obj.repository_id,
+        "branch_id": lakefs_action_obj.tag_id if lakefs_action_obj.tag_id else lakefs_action_obj.commit_id,
+        "host_name": config.frink_address,
+        "pvc_storage_size": pvc_storage_size
+    }
+    
+    # Needs a real S3 endpoint URL for s5cmd: 
+    # Example: if lakefs_url is https://frink-lakefs.apps.renci.org
+    parameters['lakefs_url'] = config.lakefs_url
+    
+    qlever_server_manager.create_all(
+        parameters=parameters,
+        annotations=annotations,
+        resources=resources
+    )
+
+    retries = 10
+    # ensure wait_for_services is called appropriately (it sleeps/retries)
+    server_up = qlever_server_manager.wait_for_services_to_be_running(
+        parameters=parameters,
+        annotations=annotations,
+        max_retries=retries
+    )
+    
+    if not server_up:
+        raise Exception(f"QLever deployment for {kg_name} failed check.")
+        
+    logger.info(f"QLever deployment verified healthy for {kg_name}. Pruning older deployments...")
+    qlever_server_manager.prune_old_deployments(kg_name=kg_name, keep_version=version)
 
 @activity.defn
 async def notify_slack(message: str, channel: str = None) -> None:
@@ -318,8 +388,63 @@ async def get_spider_config() -> dict:
     }
 
 @activity.defn
-async def create_local_dir(dir_path: str) -> None:
+async def create_local_dir(dir_path: str, chmod_777: bool = False) -> None:
     """Create a local directory on the worker if it does not exist."""
     logger.info(f"Creating local directory: {dir_path}")
     os.makedirs(dir_path, exist_ok=True)
+    if chmod_777:
+        os.chmod(dir_path, 0o777)
 
+
+@activity.defn
+async def create_local_file(file_path: str, content: str, append=False) -> None:
+    """Create a local file on the worker with the given content."""
+    logger.info(f"Creating local file: {file_path}")
+    if not append:
+        with open(file_path, "w") as f:
+            f.write(content)
+    else:
+        with open(file_path, "a") as f:
+            f.write(content)
+
+
+@activity.defn
+async def get_qlever_index_files(qlever_location: str) -> list[list[str]]:
+    """Get the generated Qlever index files from the local directory."""
+    logger.info(f"Getting Qlever files from: {qlever_location}")
+    result = []
+    if os.path.exists(qlever_location):
+        for f in os.listdir(qlever_location):
+            if os.path.isfile(os.path.join(qlever_location, f)):
+                result.append([os.path.join(qlever_location, f), "qlever"])
+    return result
+
+@activity.defn
+async def get_future_tag(repo: str) -> str:
+    """Get the next version tag for a repository from LakeFS."""
+    logger.info(f"Getting future tag for {repo}")
+    return await resolve_future_tag(repo)
+
+@activity.defn
+async def get_qlever_storage_size(repo: str, branch: str) -> str:
+    """
+    Query LakeFS for the size of the QLever directory, add a 10% buffer,
+    and return a PVC storage size string (e.g., '15Gi').
+    Minimum size is set to 5Gi.
+    """
+    logger.info(f"Calculating QLever storage size for {repo}@{branch}")
+    # Size of the qlever directory in bytes
+    size_bytes = await get_lakefs_prefix_size(repo, branch, "qlever/")
+    
+    # Add 10% buffer
+    buffered_size_bytes = size_bytes * 1.10
+    
+    # Convert to GiB
+    size_gib = buffered_size_bytes / (1024**3)
+    
+    # Ensure minimum 2Gi and round up to next integer
+    final_size_gib = max(2, int(size_gib) + 1)
+    
+    result = f"{final_size_gib}Gi"
+    logger.info(f"Calculated PVC storage size: {result}")
+    return result

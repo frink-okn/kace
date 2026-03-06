@@ -1,4 +1,4 @@
-image: containers.renci.org/frink/hdtc:v0.01
+image: ghcr.io/frink-okn/hdtc:v0.1.1
 command:
   - hdtc
 

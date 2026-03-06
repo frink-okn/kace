@@ -1,0 +1,67 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frink-{{ kg_name }}-qlever-server
+  labels:
+    app: frink-{{ kg_name }}-qlever-server
+    version: "{{ version }}"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: frink-{{ kg_name }}-qlever-server
+  template:
+    metadata:
+      labels:
+        app: frink-{{ kg_name }}-qlever-server
+        version: "{{ version }}"
+    spec:
+      initContainers:
+      - name: fetch-index
+        image: peakcom/s5cmd:v2.2.2
+        command:
+        - /bin/sh
+        - -c
+        - |
+          /s5cmd --endpoint-url {{ lakefs_url }} cp "s3://{{ repository_id }}/{{ branch_id }}/qlever/*" /data/{{ kg_name }}/
+          chmod -R 777 /data/{{ kg_name }}
+        env:
+        - name: AWS_ACCESS_KEY_ID
+          value: "{{ lakefs_access_key }}"
+        - name: AWS_SECRET_ACCESS_KEY
+          value: "{{ lakefs_secret_key }}"
+        volumeMounts:
+        - name: data
+          mountPath: /data
+      containers:
+      - name: qlever-server
+        image: adfreiburg/qlever:latest
+        command:
+        - qlever-server
+        - -i
+        - /data/{{ kg_name }}/{{ kg_name }}
+        - -p
+        - "7001"
+        - -j
+        - "8"
+        - -m
+        - "10G"
+        - -c
+        - "10G"
+        - -e
+        - "10G"
+        ports:
+        - containerPort: 7001
+        resources:
+          requests:
+            cpu: '2'
+            memory: '8G'
+          limits:
+            memory: '32G'
+        volumeMounts:
+        - name: data
+          mountPath: /data
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: {{ pvc_name }}

@@ -37,6 +37,13 @@ class ServerDeploymentManager:
         })
         return yaml.safe_load(httproute_template.render(parameters))
 
+    def get_ingress(self, parameters: Dict[str, Any]) -> Dict:
+        ingress_template = self.templates.get_template("ingress.j2")
+        parameters.update({
+            "host_name": self.server_host_name
+        })
+        return yaml.safe_load(ingress_template.render(parameters))
+
     def get_deployment(self, parameters: Dict[str, Any]) -> Dict:
         deployment_template = self.templates.get_template("server-deployment.j2")
         parameters.update({
@@ -138,6 +145,23 @@ class ServerDeploymentManager:
             else:
                 raise e
 
+    def create_or_update_ingress(self, parameters: Dict[str, Any], annotations: Dict[str, str] = None) -> None:
+        ingress_body = self.get_ingress(parameters)
+        ingress_name = ingress_body["metadata"]["name"]
+        if annotations:
+            raw_annotations = ingress_body["metadata"].get("annotations", {})
+            raw_annotations.update(annotations)
+            ingress_body["metadata"]["annotations"] = raw_annotations
+        k8s_client = client.NetworkingV1Api()
+        try:
+            k8s_client.read_namespaced_ingress(name=ingress_name, namespace=self.namespace)
+            k8s_client.patch_namespaced_ingress(name=ingress_name, namespace=self.namespace, body=ingress_body)
+        except ApiException as e:
+            if e.status == 404:
+                k8s_client.create_namespaced_ingress(namespace=self.namespace, body=ingress_body)
+            else:
+                raise e
+
     def create_or_update_healthcheck(self, parameters: Dict[str, Any], annotations: Dict[str, str] = None) -> None:
         healthcheck_body = self.get_healthcheck(parameters)
         healthcheck_name = healthcheck_body["metadata"]["name"]
@@ -170,8 +194,11 @@ class ServerDeploymentManager:
                 raise e
 
     def create_all(self, parameters: Dict[str, Any], annotations: Dict[str, str] = None, resources: Dict[str, Any] = None) -> None:
-        self.create_or_update_httproute(parameters=parameters, annotations=annotations)
-        self.create_or_update_healthcheck(parameters=parameters, annotations=annotations)
+        if app_config.networking_mode == "gateway":
+            self.create_or_update_httproute(parameters=parameters, annotations=annotations)
+            self.create_or_update_healthcheck(parameters=parameters, annotations=annotations)
+        else:
+            self.create_or_update_ingress(parameters=parameters, annotations=annotations)
         self.create_or_update_configmap_k8s(parameters=parameters, annotations=annotations)
         self.create_or_update_service(parameters=parameters, annotations=annotations)
         self.create_or_update_deployment(parameters=parameters,
@@ -235,6 +262,19 @@ class ServerDeploymentManager:
             else:
                 raise e
 
+    def delete_ingress_k8s(self, parameters: Dict[str, Any]) -> None:
+        api = client.NetworkingV1Api()
+        ingress_body = self.get_ingress(parameters)
+        ingress_name = ingress_body["metadata"]["name"]
+        logger.info(f"Deleting ingress : {ingress_name}")
+        try:
+            api.delete_namespaced_ingress(name=ingress_name, namespace=self.namespace)
+        except ApiException as e:
+            if e.status == 404:
+                logger.info("Ingress not found: {0}".format(ingress_name))
+            else:
+                raise e
+
     def delete_healthcheck_k8s(self, parameters: Dict[str, Any]) -> None:
         api = client.CustomObjectsApi()
         healthcheck_body = self.get_healthcheck(parameters)
@@ -257,8 +297,11 @@ class ServerDeploymentManager:
         self.delete_configmap_k8s(parameters)
         self.delete_service_k8s(parameters)
         self.delete_deployment_k8s(parameters)
-        self.delete_httproute_k8s(parameters)
-        self.delete_healthcheck_k8s(parameters)
+        if app_config.networking_mode == "gateway":
+            self.delete_httproute_k8s(parameters)
+            self.delete_healthcheck_k8s(parameters)
+        else:
+            self.delete_ingress_k8s(parameters)
 
     def is_service_running(self, service_name: str, annotations) -> bool:
         """

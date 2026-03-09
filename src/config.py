@@ -32,6 +32,7 @@ class Config(BaseModel):
     stop_email: str
     temporal_host: str
     temporal_namespace: str
+    networking_mode: str
     void_repo: str
 
 
@@ -63,5 +64,6 @@ config = Config(
     stop_email=os.environ.get('STOP_EMAIL', ''),
     temporal_host=os.environ.get('TEMPORAL_HOST', 'localhost:7233'),
     temporal_namespace=os.environ.get('TEMPORAL_NAMESPACE', 'default'),
+    networking_mode=os.environ.get('NETWORKING_MODE', 'ingress'),
     void_repo=os.environ.get('VOID_REPO', 'okn-void:develop')
 )

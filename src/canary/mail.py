@@ -57,6 +57,17 @@ class MailCanary:
                               version,
                               github_pr,
                               github_branch):
+        graph_char_message = f"""
+        <h4>Automated Graph Characterization Updates</h4>
+            <ol>
+                <li>To view any changes to your automated graph characterization please follow this link: <a href="{github_branch}">
+                Graph Characterization Branch</a></li>
+                <li>We have also created a github pull request for your review <a href="{github_pr}">Link to Pull request</a></li>
+                <li>Please review this automated characterization to ensure it aligns with your Graph.</li>
+            </ol>
+        """
+        # disable graph char message for now 
+        graph_char_message = ""
         return f"""
         <!DOCTYPE html>
         <html lang="en">
@@ -100,14 +111,7 @@ class MailCanary:
                 
                 <li>Submit the form by clicking "Create".</li>
             </ol>
-            <h4>Automated Graph Characterization Updates</h4>
-            <ol>
-                <li>To view any changes to your automated graph characterization please follow this link: <a href="{github_branch}">
-                Graph Characterization Branch</a></li>
-                <li>We have also created a github pull request for your review <a href="{github_pr}">Link to Pull request</a></li>
-                <li>Please review this automated characterization to ensure it aligns with your Graph.</li>
-            </ol>
-        
+            {graph_char_message}
             <p>When the above steps are properly completed, this version of your knowledge graph will be deployed in the 
             query servers, and you will receive another notification once the deployment is complete.</p>
             

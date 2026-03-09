@@ -1,0 +1,23 @@
+apiVersion: gateway.networking.k8s.io/v1beta1
+kind: HTTPRoute
+metadata:
+  name: frink-{{ kg_name }}-qlever-route
+spec:
+  parentRefs:
+  - name: l7-xlb-gateway
+  hostnames:
+  - "{{ host_name }}"
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: "/qlever/{{ kg_name }}"
+    backendRefs:
+    - name: frink-{{ kg_name }}-qlever-server
+      port: 7001
+    filters:
+    - type: URLRewrite
+      urlRewrite:
+        path:
+          type: ReplacePrefixMatch
+          replacePrefixMatch: "/"

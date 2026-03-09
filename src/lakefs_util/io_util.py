@@ -1,7 +1,9 @@
+import json
 import os, shutil
 import lakefs.client
 import aiohttp
 import lakefs_sdk.configuration
+from lakefs_sdk.exceptions import BadRequestException
 import asyncio
 from config import config
 from log_util import LoggingUtil
@@ -215,9 +217,40 @@ async def download_hdt_files(repo: str, branch: str, kg_name: str, hdt_path: str
             os.rename(temp_file_name, file_name)
             logger.info(f"Moved {temp_file_name} -> {file_name}")
 
+async def get_lakefs_prefix_size(repo: str, branch: str, prefix: str) -> int:
+    """
+    Returns the total size in bytes of all objects under a specific prefix in LakeFS.
+    """
+    cookie = await login_and_get_cookies(config.lakefs_url, config.lakefs_access_key, config.lakefs_secret_key)
+    total_size_bytes = 0
+    async with aiohttp.ClientSession(cookies=cookie) as session:
+        has_more = True
+        offset = ""
+        while has_more:
+            # We must use quote_plus for repo/branch but prefix must typically be encoded too if it has special chars.
+            # Usually prefix="qlever/" is fine with just quote_plus or directly in the URL if simple.
+            # Taking inspiration from download_hdt_files
+            url = f'{config.lakefs_url}/api/v1/repositories/{urllib.parse.quote_plus(repo)}/refs/{urllib.parse.quote_plus(branch)}/objects/ls?amount=1000&prefix={urllib.parse.quote_plus(prefix)}'
+            if offset:
+                url += f"&after={offset}"
+                
+            response = await session.get(url)
+            if response.status != 200:
+                logger.error(f"Error getting file list for size calculation: {await response.text()}")
+                return 0
 
-async def upload_files(repo: str, root_branch: str = "main", local_files: list[tuple[str, str]] = None):
-    """Upload the result and clear dir"""
+            results = await response.json()
+            has_more = results.get("pagination", {}).get("has_more", False)
+            offset = results.get("pagination", {}).get("next_offset", "")
+            
+            for item in results.get("results", []):
+                # Only sum files, not directories (which have size_bytes = 0 usually but good to be safe)
+                if item.get("path_type") == "object":
+                    total_size_bytes += item.get("size_bytes", 0)
+
+    return total_size_bytes
+
+async def resolve_future_tag(repo: str) -> str:
     # create client
     client = lakefs.client.LakeFSClient(
         configuration=lakefs_sdk.configuration.Configuration(
@@ -237,7 +270,20 @@ async def upload_files(repo: str, root_branch: str = "main", local_files: list[t
     # compute latest tag
     versions = [tag.id.lstrip('v') for tag in tags]
     latest_tag = "v" + bump_version(get_latest_version(versions), "patch") if len(versions) else "v0.0.1"
+    return latest_tag
+
+async def upload_files(repo: str, root_branch: str = "main", local_files: list[tuple[str, str]] = None):
+    """Upload the result and clear dir"""
+    latest_tag = await resolve_future_tag(repo)
     stable_branch_name = f"stable_{latest_tag.replace('.', '_')}"
+    # create client
+    client = lakefs.client.LakeFSClient(
+        configuration=lakefs_sdk.configuration.Configuration(
+            config.lakefs_url,
+            username=config.lakefs_access_key,
+            password=config.lakefs_secret_key
+        )
+    )
     # create branch if not exists
     try:
         client.branches_api.create_branch(repository=repo, branch_creation={
@@ -277,12 +323,18 @@ async def upload_files(repo: str, root_branch: str = "main", local_files: list[t
                     logger.info(f"Uploaded {path}")
     if len(local_files):
         # Commit
-        client.commits_api.commit(repository=repo, branch=stable_branch_name, commit_creation={
-            "message": f"Uploads for version {latest_tag}",
-            "metadata": {
-                "key": "value"
-            }
-        })
+        try:
+            client.commits_api.commit(repository=repo, branch=stable_branch_name, commit_creation={
+                "message": f"Uploads for version {latest_tag}",
+                "metadata": {
+                    "key": "value"
+                }
+            })
+        except BadRequestException as e:
+            b = json.loads(e.body)
+            if b['message'] != "commit: no changes":
+                raise e
+
 
     return {
         "stable_branch_name": stable_branch_name,

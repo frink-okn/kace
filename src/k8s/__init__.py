@@ -1,6 +1,7 @@
 import os
 from k8s.server_man import ServerDeploymentManager
 from k8s.server_man_ldf import LDFServerDeploymentMananger
+from k8s.server_man_qlever import QLeverServerDeploymentManager
 from config import config as app_config
 from k8s.podman import JobMan
 
@@ -16,6 +17,10 @@ LDF_TEMPLATE_DIR = (
         os.path.dirname(os.path.realpath(__file__)) +
         os.path.join(os.path.sep + "templates", "ldf")
 )
+QLEVER_TEMPLATE_DIR = (
+        os.path.dirname(os.path.realpath(__file__)) +
+        os.path.join(os.path.sep + "templates", "qlever")
+)
 
 fuseki_server_manager = ServerDeploymentManager(
     templates_dir=FUSEKI_TEMPLATE_DIR,
@@ -29,6 +34,11 @@ federation_server_manager = ServerDeploymentManager(
 
 ldf_server_manager = LDFServerDeploymentMananger(
     templates_dir=LDF_TEMPLATE_DIR,
+    namespace=app_config.k8s_namespace
+)
+
+qlever_server_manager = QLeverServerDeploymentManager(
+    templates_dir=QLEVER_TEMPLATE_DIR,
     namespace=app_config.k8s_namespace
 )
 

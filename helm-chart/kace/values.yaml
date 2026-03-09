@@ -151,6 +151,8 @@ app_config:
   # Temporal config (used when workerMode: temporal)
   temporal_host: ""             # auto-detected if empty
   temporal_namespace: "default"
+  # Networking mode: "gateway" (HTTPRoute + HealthCheckPolicy) or "ingress" (Kubernetes Ingress)
+  networking_mode: "gateway"
 
 # Temporal server subchart
 temporal:

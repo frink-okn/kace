@@ -10,7 +10,7 @@ is keyed by build_id so that:
 """
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional
-from kubernetes import client
+from kubernetes import client, config as k8s_config
 from kubernetes.client.rest import ApiException
 from config import config as app_config
 
@@ -19,7 +19,17 @@ def pvc_name(build_id: str) -> str:
     return f"{app_config.qlever_index_pvc_prefix}{build_id}"
 
 
+def _reload_k8s_auth():
+    """Refresh the in-cluster SA token before each API call to survive
+    bound-token rotation on GKE / k8s >= 1.24."""
+    try:
+        k8s_config.load_incluster_config()
+    except Exception:
+        pass
+
+
 def _api() -> client.CoreV1Api:
+    _reload_k8s_auth()
     return client.CoreV1Api()
 
 

@@ -4,6 +4,7 @@ metadata:
   name: {{ include "kace.fullname" . }}
   labels:
     {{- include "kace.labels" . | nindent 4 }}
+    app: kace-web-hook
 spec:
   {{- if not .Values.autoscaling.enabled }}
   replicas: {{ .Values.replicaCount }}
@@ -11,6 +12,7 @@ spec:
   selector:
     matchLabels:
       {{- include "kace.selectorLabels" . | nindent 6 }}
+      app: kace-web-hook
   template:
     metadata:
       {{- with .Values.podAnnotations }}
@@ -19,6 +21,7 @@ spec:
       {{- end }}
       labels:
         {{- include "kace.selectorLabels" . | nindent 8 }}
+        app: kace-web-hook
     spec:
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
@@ -39,13 +42,15 @@ spec:
               value: {{ .Release.Namespace }}
 
           command:
-            - 'gunicorn'
-            - 'server:app'
-            - '--bind'
-            - '0.0.0.0:9898'
-            - '-k'
-            - 'uvicorn.workers.UvicornWorker'
-            - '--timeout'
+            - 'uvicorn'
+            - {{.Values.command.entry }}
+            - '--host'
+            - '0.0.0.0'
+            - '--port'
+            - '9898'
+            - '--workers'
+            - '1'
+            - '--timeout-keep-alive'
             - '3600'
           ports:
             - name: http

@@ -24,6 +24,23 @@ mapping = {
 
 config.load_incluster_config()
 # config.load_kube_config('/mnt/c/Users/kebedey/kubeconfig/kubeconfig-sterling-kebedey-kebedey')
+
+
+def _reload_k8s_auth():
+    """Re-read the SA token from disk before each k8s API call.
+
+    GKE (and any cluster on k8s >= 1.24) issues bound ServiceAccount tokens
+    that rotate roughly every hour. The kubernetes Python client caches the
+    token at `config.load_incluster_config()` time and does not refresh it,
+    so long-running pods start hitting `system:anonymous` once the cached
+    token expires. This helper reloads the token file on demand.
+    """
+    try:
+        config.load_incluster_config()
+    except Exception as e:
+        logger.debug(f"in-cluster config reload skipped: {e}")
+
+
 class JobMan:
     def __init__(self):
         self.job_configs = {}
@@ -42,6 +59,7 @@ class JobMan:
         return job_objects
 
     def ensure_configmap(self, name, data: Dict[str, str]):
+        _reload_k8s_auth()
         core_v1 = client.CoreV1Api()
         configmap_name = f"{name}-config"
         metadata = client.V1ObjectMeta(
@@ -140,6 +158,7 @@ class JobMan:
                 volume at /mnt/repo as read-only. Used by the federated
                 qlever-index job (it must not write to source files).
         """
+        _reload_k8s_auth()
         if env_vars is None:
             env_vars = dict()
         job: kubernetes.client.V1Job = self.job_objects[job_type]
@@ -241,6 +260,7 @@ class JobMan:
 
         Returns a formatted string with pod status, exit codes, and tail logs.
         """
+        _reload_k8s_auth()
         core_v1 = client.CoreV1Api()
         output_parts = []
         try:
@@ -298,9 +318,9 @@ class JobMan:
         Raises:
             Exception: If the Job fails. Includes pod logs and exit codes.
         """
-        batch_v1 = client.BatchV1Api()
-
         while True:
+            _reload_k8s_auth()
+            batch_v1 = client.BatchV1Api()
             try:
                 job = batch_v1.read_namespaced_job(name=job_name, namespace=self.namespace)
             except client.exceptions.ApiException as e:
@@ -339,9 +359,9 @@ class JobMan:
         Raises:
             Exception: If the Job fails. Includes pod logs and exit codes.
         """
-        batch_v1 = client.BatchV1Api()
-
         while True:
+            _reload_k8s_auth()
+            batch_v1 = client.BatchV1Api()
             try:
                 job = batch_v1.read_namespaced_job(name=job_name, namespace=self.namespace)
             except client.exceptions.ApiException as e:
@@ -372,6 +392,7 @@ class JobMan:
         exists = True
         while exists:
             try:
+                _reload_k8s_auth()
                 api = client.BatchV1Api()
                 logger.info("looking up job {0}".format(name))
                 job = api.read_namespaced_job(namespace=self.namespace, name=name)
@@ -400,6 +421,7 @@ class JobMan:
         exists = True
         while exists:
             try:
+                _reload_k8s_auth()
                 v1 = client.CoreV1Api()
 
                 pod = v1.read_namespaced_pod(name=pod_name, namespace=self.namespace)
@@ -421,6 +443,7 @@ class JobMan:
                     print(f"An error occurred: {e}")
 
     def remove_pods(self, job_name):
+        _reload_k8s_auth()
         result = client.CoreV1Api().list_namespaced_pod(namespace=self.namespace,
                                                         label_selector=f"job-name={job_name}")
 

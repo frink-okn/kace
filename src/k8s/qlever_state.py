@@ -8,9 +8,18 @@ that produced the serving build) so that QLeverIndexWorkflow can:
 """
 import json
 from typing import Dict, Optional
-from kubernetes import client
+from kubernetes import client, config as k8s_config
 from kubernetes.client.rest import ApiException
 from config import config as app_config
+
+
+def _reload_k8s_auth():
+    """Refresh the in-cluster SA token before each API call to survive
+    bound-token rotation on GKE / k8s >= 1.24."""
+    try:
+        k8s_config.load_incluster_config()
+    except Exception:
+        pass
 
 
 EMPTY_STATE: Dict = {
@@ -23,10 +32,7 @@ EMPTY_STATE: Dict = {
 
 
 def _api() -> client.CoreV1Api:
-    try:
-        client.Configuration.get_default_copy()
-    except Exception:
-        pass
+    _reload_k8s_auth()
     return client.CoreV1Api()
 
 

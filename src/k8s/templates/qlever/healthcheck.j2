@@ -1,7 +1,7 @@
 apiVersion: networking.gke.io/v1
 kind: HealthCheckPolicy
 metadata:
-  name: ldf-health-check
+  name: {{ kg_name }}-qlever-health-check
 spec:
   default:
     checkIntervalSec: 10
@@ -9,10 +9,11 @@ spec:
     healthyThreshold: 2
     unhealthyThreshold: 2
     config:
-      type: TCP
-      tcpHealthCheck:
-        port: 3000
+      type: HTTP
+      httpHealthCheck:
+        port: 7001
+        requestPath: /?query=ASK%20%7B%7D
   targetRef:
     group: ""
     kind: Service
-    name: frink-ldf-service # 👈 Attach to your specific service
+    name: frink-{{ kg_name }}-qlever-server

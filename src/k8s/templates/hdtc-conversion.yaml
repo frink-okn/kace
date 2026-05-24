@@ -1,0 +1,6 @@
+image: ghcr.io/frink-okn/hdtc:v1.0.2
+command:
+  - hdtc
+
+
+

@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ pvc_name }}
+  labels:
+    app: frink-{{ kg_name }}-qlever-server
+spec:
+{% if qlever_storage_class %}
+  storageClassName: {{ qlever_storage_class }}
+{% endif %}
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: {{ pvc_storage_size }}

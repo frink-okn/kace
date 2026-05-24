@@ -1,16 +1,9 @@
-"""
-Quick script to trigger a test workflow execution.
-Run from src/: python -m temporal_app.trigger_test
 
-This will start an HDTConversionWorkflow with dummy data so you can
-see it appear in the Temporal UI at http://localhost:8080.
-The workflow will fail (no real K8s cluster), but it proves the
-worker ↔ server ↔ UI pipeline works end-to-end.
-"""
 import asyncio
 from temporalio.client import Client
 from config import config
-
+from models.kg_metadata import KGConfig
+from models.lakefs_models import LakefTagCreationModel
 
 async def main():
     client = await Client.connect(
@@ -19,22 +12,51 @@ async def main():
     )
 
     # Start a test HDTConversionWorkflow
+    # handle = await client.start_workflow(
+    #     "HDTConversionWorkflow",  # workflow name (string form)
+    #     args=[
+    #         # action_payload
+    #         {
+    #             "hook_id": "test-hook",
+    #             "repository_id": "climatepub4-kg",
+    #             "branch_id": "main",
+    #             "commit_id": "2cff306f9bf8495b6c28cd4776cf799c0dc432015b9f6dbe1c8410e972049ec9",
+    #             "source_ref": "2cff306f9bf8495b6c28cd4776cf799c0dc432015b9f6dbe1c8410e972049ec9",
+    #         },
+    #         'path-1',
+    #         # "https://raw.githubusercontent.com/frink-okn/okn-registry/refs/heads/main/docs/registry/neo4j-conf/spoke-genelab.yaml"
+    #     ],
+    #     id="test-hdtc-001",
+    #     task_queue="frink-temporal-queue",
+    # )
+
+    # start test deployment
+
+    # LakefTagCreationModel(**  )
+
+    kg= KGConfig.from_git_sync().get_by_repo(repo_id="climatepub4-kg")
     handle = await client.start_workflow(
-        "Neo4jConversionWorkflow",  # workflow name (string form)
+        "QLeverDeploymentWorkflow",  # workflow name (string form)
         args=[
+            # kg_config
+            kg,
             # action_payload
-            {
-                "hook_id": "test-hook",
-                "repository_id": "spoke-genelab-kg",
-                "branch_id": "main",
-                "commit_id": "2cff306f9bf8495b6c28cd4776cf799c0dc432015b9f6dbe1c8410e972049ec9",
-                "source_ref": "2cff306f9bf8495b6c28cd4776cf799c0dc432015b9f6dbe1c8410e972049ec9",
-            },
-            "https://raw.githubusercontent.com/frink-okn/okn-registry/refs/heads/main/docs/registry/neo4j-conf/spoke-genelab.yaml"
+            "1",
+            "3Gi",
+            {"event_type": "post-create-tag",
+             "event_time": "2026-03-03T19:51:51Z",
+             "action_name": "Deploy sparql endpoints",
+             "hook_id": "deploy-update-servers",
+             "repository_id": "climatepub4-kg",
+             "source_ref": "87db5ae06880c6cbfa24a11ec2b0b29dc29fe01da2b066fa57a55ef364a0b158",
+             "tag_id": "v0.0.1",
+             "commit_id": "87db5ae06880c6cbfa24a11ec2b0b29dc29fe01da2b066fa57a55ef364a0b158"}
+            ,
         ],
-        id="test-neo4j-workflow-001",
+        id="test-qlever-deployment-001",
         task_queue="frink-temporal-queue",
     )
+
 
     print(f"✅ Workflow started!")
     print(f"   Workflow ID: {handle.id}")

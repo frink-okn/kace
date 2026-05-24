@@ -1,6 +1,6 @@
 from typing import List, Dict, Optional, Union
 import httpx
-from pydantic import BaseModel, Field, PrivateAttr,field_validator, model_validator
+from pydantic import BaseModel, Field, PrivateAttr, field_validator, model_validator, ConfigDict
 import yaml
 import aiohttp
 from config import config
@@ -26,12 +26,14 @@ class Contact(BaseModel):
         return value
 # Define a model for the nested "frink-options"
 class FrinkOptions(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
     documentation_path: Optional[str] = Field(alias="documentation-path")
     lakefs_repo: Optional[str] = Field(alias="lakefs-repo")
     neo4j_conversion_config_path: Optional[str] = Field(alias="neo4j-conversion-config-path", default="")
 
 # Define a model for each KG item
 class KG(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
     description: str
     frink_options: Optional[FrinkOptions] = Field(None, alias="frink-options")
     contacts: Optional[List[Contact]] = None
@@ -94,7 +96,18 @@ class KGConfig(BaseModel):
         }
 
     def get_by_repo(self, repo_id: str) -> Optional[KG]:
-        return self._by_key.get(repo_id)
+        kg = self._by_key.get(repo_id)
+        if kg is None and repo_id in config.conversion_skip_repos:
+            kg = KG(
+                description=f"Synthetic entry for {repo_id} (no registry record; CONVERSION_SKIP_REPOS)",
+                shortname=repo_id,
+                title=repo_id,
+                frink_options=FrinkOptions(
+                    **{"documentation-path": "", "lakefs-repo": repo_id, "neo4j-conversion-config-path": ""}
+                ),
+                contacts=[],
+            )
+        return kg
 
 # Example usage:
 if __name__ == "__main__":
@@ -103,15 +116,15 @@ if __name__ == "__main__":
 
     # Create the KGConfig instance from the dict
     config = asyncio.run(KGConfig.from_git())
-    user_names = set()
-    for kg in config.kgs:
-        for c in kg.contacts:
-            if c.github:
-                for g in c.github:
-                    user_names.add(g)
-
-    for u in user_names:
-        print(u)
+    # user_names = set()
+    # for kg in config.kgs:
+    #     for c in kg.contacts:
+    #         if c.github:
+    #             for g in c.github:
+    #                 user_names.add(g)
+    #
+    # for u in user_names:
+    #     print(u)
 
 
     # # Now you can lookup KG items by their lakefs_repo value
@@ -136,8 +149,8 @@ if __name__ == "__main__":
     #
     # print(text)
     # print(config.get_by_repo("gene-expression-atlas-okn"))
-    # bioheath = config.get_by_repo("nde")
-    # print(config.get_by_repo("nde").frink_options)
-    # print(bioheath.emails)
+    bioheath = config.get_by_repo("evoweb")
+    print(config.get_by_repo("evoweb").frink_options)
+    print(bioheath.emails)
     # print(config.get_by_repo("dream-kg").contact.emil)
 

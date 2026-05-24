@@ -1,0 +1,55 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ job_name }}
+  labels:
+    app: frink-ldf-sync
+    kg: {{ shortname }}
+spec:
+  backoffLimit: 1
+  ttlSecondsAfterFinished: 600
+  template:
+    metadata:
+      labels:
+        app: frink-ldf-sync
+        kg: {{ shortname }}
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: sync
+          image: {{ image }}
+          imagePullPolicy: Always
+          command:
+            - python
+            - -m
+            - k8s.jobs.ldf_sync_kg
+          args:
+            - --repo
+            - {{ repo }}
+            - --ref
+            - {{ ref }}
+            - --shortname
+            - {{ shortname }}
+            - --hdt-path
+            - {{ hdt_path | default('hdt') }}
+            - --dest-root
+            - /data/deploy
+          env:
+            {% for e in env %}
+            - name: {{ e.name }}
+              value: {{ e.value | tojson }}
+            {% endfor %}
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "1Gi"
+            limits:
+              cpu: "2"
+              memory: "4Gi"
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ pvc_name }}

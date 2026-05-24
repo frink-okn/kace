@@ -1,0 +1,27 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt
+    nginx.ingress.kubernetes.io/enable-cors: "true"
+    nginx.ingress.kubernetes.io/rewrite-target: /$1
+    nginx.ingress.kubernetes.io/whitelist-source-range: "0.0.0.0/0,::/0"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "600"
+  name: frink-{{ kg_name }}-qlever-ingress
+spec:
+  tls:
+  - hosts:
+      - {{ host_name }}
+    secretName: {{ host_name }}-tls
+  rules:
+  - host: {{ host_name }}
+    http:
+      paths:
+      - pathType: ImplementationSpecific
+        path: "/{{ kg_name }}/(.*)"
+        backend:
+          service:
+            name: frink-{{ kg_name }}-qlever-server
+            port:
+              number: 7001

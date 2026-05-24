@@ -24,7 +24,23 @@ from .activities import (
     create_local_file,
     get_qlever_index_files,
     get_future_tag,
-    get_qlever_storage_size
+    get_qlever_storage_size,
+    download_hdt_files_activity,
+    fetch_all_kgs,
+    get_lakefs_latest_commit_activity,
+    resolve_kg_ref,
+    resolve_latest_tag,
+    resolve_qlever_refs,
+    read_qlever_state,
+    write_qlever_state,
+    create_qlever_index_pvc,
+    gc_qlever_index_pvcs,
+    read_ldf_state,
+    write_ldf_state,
+    ensure_ldf_pvc,
+    submit_ldf_sync_job,
+    wait_ldf_sync_job,
+    apply_ldf_config_and_rollout,
 )
 
 from .workflows import (
@@ -32,7 +48,9 @@ from .workflows import (
     Neo4jConversionWorkflow,
     DeploymentWorkflow,
     QLeverIndexWorkflow,
-    QLeverDeploymentWorkflow
+    QLeverDeploymentWorkflow,
+    FusekiDeploymentWorkflow,
+    LDFSyncWorkflow,
 )
 
 logger = LoggingUtil.init_logging(__name__)
@@ -51,7 +69,9 @@ async def main():
             Neo4jConversionWorkflow,
             DeploymentWorkflow,
             QLeverIndexWorkflow,
-            QLeverDeploymentWorkflow # Added
+            QLeverDeploymentWorkflow,
+            FusekiDeploymentWorkflow, # Added
+            LDFSyncWorkflow,
         ],
         activities=[
             run_k8s_job,
@@ -74,7 +94,23 @@ async def main():
             create_local_file,
             get_qlever_index_files,
             get_future_tag,
-            get_qlever_storage_size
+            get_qlever_storage_size,
+            download_hdt_files_activity,
+            fetch_all_kgs,
+            get_lakefs_latest_commit_activity,
+            resolve_kg_ref,
+            resolve_latest_tag,
+            resolve_qlever_refs,
+            read_qlever_state,
+            write_qlever_state,
+            create_qlever_index_pvc,
+            gc_qlever_index_pvcs,
+            read_ldf_state,
+            write_ldf_state,
+            ensure_ldf_pvc,
+            submit_ldf_sync_job,
+            wait_ldf_sync_job,
+            apply_ldf_config_and_rollout,
         ],
     )
     

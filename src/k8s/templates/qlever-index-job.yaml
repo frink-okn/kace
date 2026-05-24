@@ -3,6 +3,6 @@ command:
   - bash
 configmap:
   /qlever/frink-qlever.settings.json: |
-    { "ascii-prefixes-only": false, "num-triples-per-batch": 1000000, "parser-integer-overflow-behavior": "overflowing-integers-become-doubles" }
+    { "ascii-prefixes-only": false, "num-triples-per-batch": 10000, "parser-integer-overflow-behavior": "overflowing-integers-become-doubles" }
 
 

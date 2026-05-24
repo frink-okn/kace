@@ -23,6 +23,7 @@ spec:
         - /bin/sh
         - -c
         - |
+          mkdir -p /data/{{ kg_name }}/
           /s5cmd --endpoint-url {{ lakefs_url }} cp "s3://{{ repository_id }}/{{ branch_id }}/qlever/*" /data/{{ kg_name }}/
           chmod -R 777 /data/{{ kg_name }}
         env:
@@ -42,22 +43,17 @@ spec:
         - /data/{{ kg_name }}/{{ kg_name }}
         - -p
         - "7001"
-        - -j
-        - "8"
-        - -m
-        - "10G"
-        - -c
-        - "10G"
-        - -e
-        - "10G"
+        {% for arg in qlever_args %}
+        - "{{ arg }}"
+        {% endfor %}
         ports:
         - containerPort: 7001
         resources:
           requests:
-            cpu: '2'
-            memory: '8G'
+            cpu: "{{ cpu }}"
+            memory: "{{ memory }}"
           limits:
-            memory: '32G'
+            memory: "{{ memory }}"
         volumeMounts:
         - name: data
           mountPath: /data

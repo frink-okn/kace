@@ -39,6 +39,7 @@ ldf_server_manager = LDFServerDeploymentMananger(
 
 qlever_server_manager = QLeverServerDeploymentManager(
     templates_dir=QLEVER_TEMPLATE_DIR,
-    namespace=app_config.k8s_namespace
+    namespace=app_config.k8s_namespace,
+    use_private_pvc=app_config.qlever_use_private_pvc
 )
 

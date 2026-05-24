@@ -10,8 +10,15 @@ from config import config as app_config
 logger = LoggingUtil.init_logging("qlever-k8s-man")
 
 class QLeverServerDeploymentManager(ServerDeploymentManager):
-    def __init__(self, templates_dir, namespace):
+    def __init__(self, templates_dir, namespace, use_private_pvc: bool = True):
         super().__init__(templates_dir, namespace)
+        self.use_private_pvc = use_private_pvc
+
+    def get_deployment(self, parameters: Dict[str, Any]) -> Dict:
+        deployment_template = self.templates.get_template("server-deployment.j2")
+        if not self.use_private_pvc:
+            parameters.update({"pvc_name": self.pvc_name})
+        return yaml.safe_load(deployment_template.render(parameters))
 
     def get_pvc(self, parameters: Dict[str, Any]) -> Dict:
         pvc_template = self.templates.get_template("pvc.j2")
@@ -43,9 +50,15 @@ class QLeverServerDeploymentManager(ServerDeploymentManager):
         Deploy the Qlever Server.
         For Qlever, we must provision the dynamically created standalone PVC first.
         """
-        self.create_or_update_pvc(parameters=parameters, annotations=annotations)
-        # For QLever we don't have a config-map
-        # self.create_or_update_httproute(parameters=parameters, annotations=annotations)
+        if self.use_private_pvc:
+            self.create_or_update_pvc(parameters=parameters, annotations=annotations)
+        else:
+            self.prune_old_deployments(parameters["kg_name"])
+        if app_config.networking_mode == "gateway":
+            self.create_or_update_httproute(parameters=parameters, annotations=annotations)
+            self.create_or_update_healthcheck(parameters=parameters, annotations=annotations)
+        else:
+            self.create_or_update_ingress(parameters=parameters, annotations=annotations)
         self.create_or_update_service(parameters=parameters, annotations=annotations)
         self.create_or_update_deployment(parameters=parameters, annotations=annotations, resources=resources)
 
@@ -59,14 +72,14 @@ class QLeverServerDeploymentManager(ServerDeploymentManager):
         return (self.is_service_running(service_name, annotations=annotations) and
                 self.is_deployment_running(deployment_name, annotations=annotations))
 
-    def prune_old_deployments(self, kg_name: str, keep_version: str) -> None:
+    def prune_old_deployments(self, kg_name: str, keep_version: str = None) -> None:
         """
-        Scan for and delete any PVCs, Deployments, and Services for this kg_name that do NOT match the `keep_version`.
-        This guarantees only one live version runs at a time.
+        Scan for and delete any PVCs for this kg_name that do NOT match keep_version.
+        Pass keep_version=None to delete all private PVCs (e.g. when switching to shared PVC).
         """
         k8s_core = client.CoreV1Api()
         k8s_apps = client.AppsV1Api()
-        
+
         label_selector = f"app=frink-{kg_name}-qlever-server"
 
         # Prune old PVCs
@@ -74,7 +87,7 @@ class QLeverServerDeploymentManager(ServerDeploymentManager):
             pvcs = k8s_core.list_namespaced_persistent_volume_claim(namespace=self.namespace, label_selector=label_selector)
             for pvc in pvcs.items:
                 version = pvc.metadata.annotations.get("version") if pvc.metadata.annotations else None
-                if version != keep_version:
+                if keep_version is None or version != keep_version:
                     logger.info(f"Pruning old PVC: {pvc.metadata.name}")
                     k8s_core.delete_namespaced_persistent_volume_claim(name=pvc.metadata.name, namespace=self.namespace)
         except Exception as e:

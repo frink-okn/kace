@@ -5,6 +5,9 @@ metadata:
   labels:
     app: frink-{{ kg_name }}-qlever-server
 spec:
+{% if qlever_storage_class %}
+  storageClassName: {{ qlever_storage_class }}
+{% endif %}
   accessModes:
   - ReadWriteOnce
   resources:

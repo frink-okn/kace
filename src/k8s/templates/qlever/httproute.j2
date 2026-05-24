@@ -4,14 +4,15 @@ metadata:
   name: frink-{{ kg_name }}-qlever-route
 spec:
   parentRefs:
-  - name: l7-xlb-gateway
+  - name: ingress-gateway
+    namespace: ingress
   hostnames:
   - "{{ host_name }}"
   rules:
   - matches:
     - path:
         type: PathPrefix
-        value: "/qlever/{{ kg_name }}"
+        value: "/{{ kg_name }}"
     backendRefs:
     - name: frink-{{ kg_name }}-qlever-server
       port: 7001

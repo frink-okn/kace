@@ -122,7 +122,24 @@ class JobMan:
         )
 
     def run_job(self, job_type, job_name, repo: str, branch: str, command: List[str] = None, args: List[str] = None,
-                resources=None, env_vars=None, additional_volume_mounts=None):
+                resources=None, env_vars=None, additional_volume_mounts=None,
+                image: str = None, extra_pvcs: List[Dict] = None,
+                read_only_default_mount: bool = False,
+                pod_security_context: Dict = None):
+        """
+        Args:
+            extra_pvcs: list of dicts with keys
+                {"name": volume name (k8s id),
+                 "claim": PVC claim name,
+                 "mount_path": container mount path,
+                 "read_only": bool (optional, default False)}
+                Volumes are appended to the pod and mounts to container[0].
+            image: override the container image (e.g. for the qlever-index job
+                whose image is config-driven, not template-driven).
+            read_only_default_mount: when True, mount the default `data`
+                volume at /mnt/repo as read-only. Used by the federated
+                qlever-index job (it must not write to source files).
+        """
         if env_vars is None:
             env_vars = dict()
         job: kubernetes.client.V1Job = self.job_objects[job_type]
@@ -150,11 +167,14 @@ class JobMan:
         if env_vars:
             env = [kubernetes.client.V1EnvVar(name=key, value=value) for key, value in env_vars.items()]
             pod_template.containers[0].env = env
+        if image:
+            pod_template.containers[0].image = image
         # @TODO not all job containers need this but ok ...
         volume_mounts = [
             client.V1VolumeMount(
                 name="data",
                 mount_path="/mnt/repo",
+                read_only=read_only_default_mount,
                 # sub_path=f"{repo}/{branch}"
             )
         ]
@@ -180,10 +200,36 @@ class JobMan:
                     name=v[0],
                     mount_path=v[1]
                 ))
-        
+
+        if extra_pvcs:
+            existing_volumes = {vol.name for vol in pod_template.volumes or []}
+            for spec in extra_pvcs:
+                vol_name   = spec["name"]
+                claim_name = spec["claim"]
+                mount_path = spec["mount_path"]
+                read_only  = bool(spec.get("read_only", False))
+                if vol_name not in existing_volumes:
+                    pod_template.volumes = (pod_template.volumes or []) + [
+                        client.V1Volume(
+                            name=vol_name,
+                            persistent_volume_claim=client.V1PersistentVolumeClaimVolumeSource(
+                                claim_name=claim_name
+                            ),
+                        )
+                    ]
+                    existing_volumes.add(vol_name)
+                volume_mounts.append(client.V1VolumeMount(
+                    name=vol_name,
+                    mount_path=mount_path,
+                    read_only=read_only,
+                ))
+
         # De-duplicate mounts by mount_path just in case
         unique_mounts = {vm.mount_path: vm for vm in volume_mounts}
         pod_template.containers[0].volume_mounts = list(unique_mounts.values())
+
+        if pod_security_context:
+            pod_template.security_context = client.V1PodSecurityContext(**pod_security_context)
 
         api = client.BatchV1Api()
         logger.info(f"removing previous jobs {job_name} ")

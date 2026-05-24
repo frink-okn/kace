@@ -126,45 +126,41 @@ class MailCanary:
 
     def send_email(self, recipient_email, subject, body):
         """
-        Send an email notification.
-        :param recipient_email: Recipient's email address.
-        :param subject: Subject of the email.
-        :param body: Body of the email.
+        Send a single-part HTML email to avoid 'multipart/mixed' spam flags.
         """
         try:
-            # Create the email
-            message = MIMEMultipart()
+            # Change: Using MIMEText directly instead of MIMEMultipart
+            # This ensures the Content-Type is 'text/html' without a 'boundary'
+            message = MIMEText(body, 'html', 'utf-8')
             message['From'] = self.sender_email
             message['To'] = ", ".join([x.strip() for x in recipient_email.split(',')])
             message['Subject'] = subject
-            message.attach(MIMEText(body, 'html'))
 
-            # Connect to the SMTP server and send the email
+            # Connect and send
             with smtplib.SMTP(self.smtp_server, self.smtp_port) as server:
-                print(self.smtp_server, self.smtp_port)
-                server.connect(self.smtp_server, self.smtp_port)
                 server.starttls()  # Secure the connection
                 if self.sender_password:
                     server.login(self.sender_email, self.sender_password)
+
                 if not config.stop_email:
                     server.send_message(message)
 
-            print(f"Email sent to {recipient_email}")
+            logger.info(f"Email sent to {recipient_email}")
 
         except Exception as e:
+            logger.error(f"Failed to send email: {str(e)}")
             raise e
 
     def notify_event(self, recipient_email, event_name, **kwargs):
         """
-        Notify about a specific event via email.
-        :param recipient_email: Recipient's email address.
-        :param event_name: Name of the event.
-        :param kwargs: Additional context for the event.
+        Adjusted to send HTML instead of plain text to stay consistent.
         """
         subject = f"Notification: {event_name}"
-        body = f"An event occurred: {event_name}\n\nDetails:\n"
+        # Wrapping in a <pre> tag so line breaks in the string are preserved in HTML
+        body = f"<html><body><h3>Event: {event_name}</h3><pre>"
         for key, value in kwargs.items():
             body += f"- {key}: {value}\n"
+        body += "</pre></body></html>"
         self.send_email(recipient_email, subject, body)
 
     def send_review_email(self,
@@ -197,9 +193,18 @@ class MailCanary:
             version=version,
             access_url=access_url
         )
-        self.send_email(recipient_email, f"No-reply -- {kg_name} {version} has been deployed", email_body)
+        self.send_email(recipient_email, f"{kg_name} {version} Deployed", email_body)
 
 
 mail_canary = MailCanary(
     config.smtp_server, config.smtp_port, config.email_address, config.email_password
 )
+
+# if __name__=="__main__":
+    # mail_canary = MailCanary(
+    #     "mail.smtp2go.com",
+    #     "2525",
+    #     "no-reply@okn.us",
+    #     "OpgplUSRcIU09X95"
+    # )
+    # mail_canary.send_deployed_email("kebedey@renci.org", "v1.0.0", "okn-kg")

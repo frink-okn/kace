@@ -59,7 +59,7 @@ class Neo4jConversionWorkflow:
         # 3. Download JSON files (if any already exist)
         json_dump_files_list = await workflow.execute_activity(
             download_input_files,
-            args=[repo_id, branch_id, ['json', 'json.gz'], None, None, False],
+            args=[repo_id, branch_id, ['json', 'json.gz', 'json.zst'], None, None, False],
             start_to_close_timeout=timedelta(hours=2),
             retry_policy=NO_RETRY
         )
@@ -144,7 +144,6 @@ class Neo4jConversionWorkflow:
             args=[
                 action_payload,
                 kg_config.frink_options.documentation_path,
-                kg_config.shortname,
                 # remaining params use defaults: cpu, memory, ephemeral, java_opts, mem_size,
                 # convert_to_hdt, hdt_path, exclude_files, exclude_known_extension
                 1, "28Gi", "512Mi",

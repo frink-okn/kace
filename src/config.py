@@ -34,6 +34,28 @@ class Config(BaseModel):
     temporal_namespace: str
     networking_mode: str
     void_repo: str
+    qlever_storage_class: str
+    qlever_use_private_pvc: bool
+    conversion_skip_repos: list[str]
+    ldf_pvc_name: str
+    ldf_pvc_size: str
+    ldf_pvc_storage_class: str
+    ldf_replicas: int
+    ldf_image: str
+    ldf_extra_datasources: list[dict]
+    ldf_sync_image: str
+    ldf_host_name: str
+    qlever_image: str
+    qlever_indexer_cpu: str
+    qlever_indexer_memory: str
+    qlever_indexer_stxxl_memory: str
+    qlever_index_pvc_size: str
+    qlever_index_pvc_storage_class: str
+    qlever_source_path: str
+    qlever_state_configmap: str
+    qlever_index_pvc_prefix: str
+    qlever_index_previous_ttl_hours: int
+    qlever_download_concurrency: int
 
 
 
@@ -65,5 +87,27 @@ config = Config(
     temporal_host=os.environ.get('TEMPORAL_HOST', 'localhost:7233'),
     temporal_namespace=os.environ.get('TEMPORAL_NAMESPACE', 'default'),
     networking_mode=os.environ.get('NETWORKING_MODE', 'ingress'),
-    void_repo=os.environ.get('VOID_REPO', 'okn-void:develop')
+    void_repo=os.environ.get('VOID_REPO', 'okn-void:develop'),
+    qlever_storage_class=os.environ.get('QLEVER_STORAGE_CLASS', ''),
+    qlever_use_private_pvc=os.environ.get('QLEVER_USE_PRIVATE_PVC', 'true').lower() == 'true',
+    conversion_skip_repos=[r.strip() for r in os.environ.get('CONVERSION_SKIP_REPOS', '').split(',') if r.strip()],
+    ldf_pvc_name=os.environ.get('LDF_PVC_NAME', 'frink-ldf-data'),
+    ldf_pvc_size=os.environ.get('LDF_PVC_SIZE', '500Gi'),
+    ldf_pvc_storage_class=os.environ.get('LDF_PVC_STORAGE_CLASS', ''),
+    ldf_replicas=int(os.environ.get('LDF_REPLICAS', '2')),
+    ldf_image=os.environ.get('LDF_IMAGE', 'containers.renci.org/frink/ldf-server:2023-09-13'),
+    ldf_extra_datasources=__import__('json').loads(os.environ.get('LDF_EXTRA_DATASOURCES', '[]')),
+    ldf_sync_image=os.environ.get('LDF_SYNC_IMAGE', ''),
+    ldf_host_name=os.environ.get('LDF_HOST_NAME', 'frink.apps.renci.org'),
+    qlever_image=os.environ.get('QLEVER_IMAGE', 'adfreiburg/qlever:commit-99b6db5'),
+    qlever_indexer_cpu=os.environ.get('QLEVER_INDEXER_CPU', '8'),
+    qlever_indexer_memory=os.environ.get('QLEVER_INDEXER_MEMORY', '100Gi'),
+    qlever_indexer_stxxl_memory=os.environ.get('QLEVER_INDEXER_STXXL_MEMORY', '40G'),
+    qlever_index_pvc_size=os.environ.get('QLEVER_INDEX_PVC_SIZE', '3Ti'),
+    qlever_index_pvc_storage_class=os.environ.get('QLEVER_INDEX_PVC_STORAGE_CLASS', 'premium-rwo'),
+    qlever_source_path=os.environ.get('QLEVER_SOURCE_PATH', '/shared/qlever-source'),
+    qlever_state_configmap=os.environ.get('QLEVER_STATE_CONFIGMAP', 'kace-qlever-state'),
+    qlever_index_pvc_prefix=os.environ.get('QLEVER_INDEX_PVC_PREFIX', 'kace-qlever-index-'),
+    qlever_index_previous_ttl_hours=int(os.environ.get('QLEVER_INDEX_PREVIOUS_TTL_HOURS', '24')),
+    qlever_download_concurrency=int(os.environ.get('QLEVER_DOWNLOAD_CONCURRENCY', '4')),
 )

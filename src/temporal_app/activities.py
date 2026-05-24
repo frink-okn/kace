@@ -385,6 +385,9 @@ PER_REPO_INPUT_FILTERS = {
     "spatialkg":          '| grep -v "<http://stko-kwg.geog.ucsb.edu/lod/ontology/cellID>"',
     "biobricks-aopwiki":  '| tail -n +28',
     "biobricks-mesh":     '| tail -n +28',
+    # sudokn: drop triples that declare a decimal value (e.g. "311111.0") as
+    # xsd:integer — qlever's IndexBuilderMain refuses to parse these.
+    "sudokn":             r"""| grep -Ev '\.[0-9]+"\^\^<http://www\.w3\.org/2001/XMLSchema#integer>'""",
 }
 
 # Overrides for where the source nt file lives in lakefs. Keys may be either

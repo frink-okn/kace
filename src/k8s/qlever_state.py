@@ -14,12 +14,14 @@ from config import config as app_config
 
 
 def _reload_k8s_auth():
-    """Refresh the in-cluster SA token before each API call to survive
-    bound-token rotation on GKE / k8s >= 1.24."""
-    try:
-        k8s_config.load_incluster_config()
-    except Exception:
-        pass
+    # legacy no-op; kept for source-compat
+    pass
+
+
+def _fresh_api_client():
+    cfg = client.Configuration()
+    k8s_config.load_incluster_config(client_configuration=cfg)
+    return client.ApiClient(configuration=cfg)
 
 
 EMPTY_STATE: Dict = {
@@ -32,8 +34,7 @@ EMPTY_STATE: Dict = {
 
 
 def _api() -> client.CoreV1Api:
-    _reload_k8s_auth()
-    return client.CoreV1Api()
+    return client.CoreV1Api(api_client=_fresh_api_client())
 
 
 def read_state() -> Dict:

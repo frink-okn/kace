@@ -26,19 +26,39 @@ config.load_incluster_config()
 # config.load_kube_config('/mnt/c/Users/kebedey/kubeconfig/kubeconfig-sterling-kebedey-kebedey')
 
 
-def _reload_k8s_auth():
-    """Re-read the SA token from disk before each k8s API call.
+def _fresh_api_client():
+    """Build a brand-new ApiClient with a Configuration loaded from disk.
 
-    GKE (and any cluster on k8s >= 1.24) issues bound ServiceAccount tokens
-    that rotate roughly every hour. The kubernetes Python client caches the
-    token at `config.load_incluster_config()` time and does not refresh it,
-    so long-running pods start hitting `system:anonymous` once the cached
-    token expires. This helper reloads the token file on demand.
+    GKE (and any k8s >= 1.24) issues bound SA tokens that rotate ~hourly.
+    The kubernetes Python client caches the token in the default
+    Configuration, and any ApiClient created via `_core_v1()`
+    snapshots that Configuration through `get_default_copy()`. Long-running
+    pods therefore start hitting `system:anonymous` once the cached token
+    is rotated by the kubelet. We avoid the shared default entirely:
+    each call gets a fresh Configuration populated from the on-disk
+    token, wrapped in a fresh ApiClient.
     """
+    cfg = client.Configuration()
     try:
-        config.load_incluster_config()
+        config.load_incluster_config(client_configuration=cfg)
     except Exception as e:
-        logger.debug(f"in-cluster config reload skipped: {e}")
+        logger.error(f"load_incluster_config failed: {e}")
+        raise
+    return client.ApiClient(configuration=cfg)
+
+
+def _core_v1():
+    return client.CoreV1Api(api_client=_fresh_api_client())
+
+
+def _batch_v1():
+    return client.BatchV1Api(api_client=_fresh_api_client())
+
+
+# Kept for source-compat with prior fix; now a no-op since callers use
+# the _core_v1 / _batch_v1 helpers above.
+def _reload_k8s_auth():
+    pass
 
 
 class JobMan:
@@ -60,7 +80,7 @@ class JobMan:
 
     def ensure_configmap(self, name, data: Dict[str, str]):
         _reload_k8s_auth()
-        core_v1 = client.CoreV1Api()
+        core_v1 = _core_v1()
         configmap_name = f"{name}-config"
         metadata = client.V1ObjectMeta(
             name=configmap_name,
@@ -250,7 +270,7 @@ class JobMan:
         if pod_security_context:
             pod_template.security_context = client.V1PodSecurityContext(**pod_security_context)
 
-        api = client.BatchV1Api()
+        api = _batch_v1()
         logger.info(f"removing previous jobs {job_name} ")
         self.remove_job(job_name)
         return api.create_namespaced_job(namespace=self.namespace, body=job)
@@ -261,7 +281,7 @@ class JobMan:
         Returns a formatted string with pod status, exit codes, and tail logs.
         """
         _reload_k8s_auth()
-        core_v1 = client.CoreV1Api()
+        core_v1 = _core_v1()
         output_parts = []
         try:
             pods = core_v1.list_namespaced_pod(
@@ -320,7 +340,7 @@ class JobMan:
         """
         while True:
             _reload_k8s_auth()
-            batch_v1 = client.BatchV1Api()
+            batch_v1 = _batch_v1()
             try:
                 job = batch_v1.read_namespaced_job(name=job_name, namespace=self.namespace)
             except client.exceptions.ApiException as e:
@@ -361,7 +381,7 @@ class JobMan:
         """
         while True:
             _reload_k8s_auth()
-            batch_v1 = client.BatchV1Api()
+            batch_v1 = _batch_v1()
             try:
                 job = batch_v1.read_namespaced_job(name=job_name, namespace=self.namespace)
             except client.exceptions.ApiException as e:
@@ -393,7 +413,7 @@ class JobMan:
         while exists:
             try:
                 _reload_k8s_auth()
-                api = client.BatchV1Api()
+                api = _batch_v1()
                 logger.info("looking up job {0}".format(name))
                 job = api.read_namespaced_job(namespace=self.namespace, name=name)
                 logger.info(f"job found... checking if being deleted")
@@ -422,7 +442,7 @@ class JobMan:
         while exists:
             try:
                 _reload_k8s_auth()
-                v1 = client.CoreV1Api()
+                v1 = _core_v1()
 
                 pod = v1.read_namespaced_pod(name=pod_name, namespace=self.namespace)
                 # Check if deletionTimestamp is set
@@ -444,7 +464,7 @@ class JobMan:
 
     def remove_pods(self, job_name):
         _reload_k8s_auth()
-        result = client.CoreV1Api().list_namespaced_pod(namespace=self.namespace,
+        result = _core_v1().list_namespaced_pod(namespace=self.namespace,
                                                         label_selector=f"job-name={job_name}")
 
         for pod in result.items:

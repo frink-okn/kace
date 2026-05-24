@@ -541,6 +541,17 @@ async def open_file_with_retry(filepath: str, mode: str = "rb", retries: int = 1
             delay *= 2
 
 
+async def object_exists(repo: str, ref: str, remote_file_path: str) -> bool:
+    """Lakefs `objects/stat` probe. Returns True iff the object is present
+    at `ref` with a non-None size. Used to pre-flight downloads so missing
+    sources can be reported up front instead of failing mid-build."""
+    cookie = await login_and_get_cookies(config.lakefs_url, config.lakefs_access_key, config.lakefs_secret_key)
+    timeout = aiohttp.ClientTimeout(total=30, sock_read=15, sock_connect=10)
+    async with aiohttp.ClientSession(cookies=cookie, timeout=timeout) as session:
+        size = await _stat_size(remote_file_path, repo, ref, session)
+        return size is not None
+
+
 async def download_file_at_ref(repo: str, ref: str, remote_file_path: str, local_download_path: str):
     """Download a single object from `repo` at an explicit ref (branch/tag/commit).
 

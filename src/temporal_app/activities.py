@@ -1,7 +1,7 @@
 from temporalio import activity
 from k8s.podman import JobMan
 from k8s import fuseki_server_manager, ldf_server_manager
-from lakefs_util.io_util import resolve_commit, download_file_from_latest_tag, download_files, upload_files, clean_up_files, resolve_future_tag, get_lakefs_prefix_size, download_hdt_files, get_latest_commit, get_latest_tag, download_file_at_ref
+from lakefs_util.io_util import resolve_commit, download_file_from_latest_tag, download_files, upload_files, clean_up_files, resolve_future_tag, get_lakefs_prefix_size, download_hdt_files, get_latest_commit, get_latest_tag, download_file_at_ref, object_exists
 from canary.slack import slack_canary
 from canary.mail import mail_canary
 from models.lakefs_models import LakefsMergeActionModel, LakefTagCreationModel
@@ -274,13 +274,13 @@ async def download_file_lakefs(repo: str, remote_path: str, local_path: str, ref
         await download_file_at_ref(repo, ref, remote_path, local_path)
     else:
         await download_file_from_latest_tag(repo, remote_path, local_path)
-    # Verify the file actually landed on disk. download_file silently returns
-    # None on 404 (logged as a warning); without this check we'd proceed to
-    # build with missing source files and only fail at IndexBuilderMain time.
+    # Resolve-time pre-flight already filtered out missing sources, so a
+    # zero-byte file here means an in-flight transport failure rather than
+    # an absent object. Treat as fatal — the build needs a real file.
     if not os.path.exists(local_path) or os.path.getsize(local_path) == 0:
         raise Exception(
-            f"Download produced no file at {local_path} for {repo}@{ref or 'latest-tag'}:{remote_path}. "
-            "File missing in lakefs, ref does not contain the file, or transport returned empty."
+            f"Download produced empty/no file at {local_path} for "
+            f"{repo}@{ref or 'latest-tag'}:{remote_path}. Network/transport error suspected."
         )
 
 
@@ -387,8 +387,9 @@ PER_REPO_INPUT_FILTERS = {
     "biobricks-mesh":     '| tail -n +28',
 }
 
-# Per-shortname overrides for where the source nt file lives in lakefs.
-# Default: remote_path="nt/graph.nt.gz", ref=latest tag.
+# Overrides for where the source nt file lives in lakefs. Keys may be either
+# a kg shortname OR a lakefs repo name — the resolver checks both. Default
+# behavior (no override): remote_path="nt/graph.nt.gz", ref=latest semver tag.
 # wikidata: file at repo root and we always pull from main (no semver tags).
 PER_REPO_LAKEFS_OVERRIDES = {
     "wikidata": {"remote_path": "graph.nt.gz", "ref": "main"},
@@ -612,13 +613,18 @@ async def resolve_kg_ref(repo: str) -> dict:
 async def resolve_qlever_refs(only_kg: list = None) -> dict:
     """Resolve the ref+commit for every lakefs repo that feeds the federated
     qlever index. Each KG uses its latest semver tag (falling back to 'main'
-    if no tags), except wikidata which always tracks 'main'. The s2-builds
-    repo is always pinned to its latest semver tag.
+    if no tags), except wikidata which always tracks 'main' (override). The
+    s2-builds repo is always pinned to its latest semver tag.
+
+    For every KG, an `objects/stat` pre-flight is performed against the
+    chosen ref + remote_path. KGs whose source object is missing are dropped
+    from `kg_refs` and accumulated in `skipped` so the workflow can Slack-
+    report them without failing the build.
 
     Returns:
       {
-        "kg_refs":  {repo_id: {"shortname": str, "ref": str, "commit": str,
-                                "remote_path": str}},
+        "kg_refs":  {repo_id: {"shortname", "ref", "commit", "remote_path"}},
+        "skipped":  [{"repo", "shortname", "ref", "remote_path", "reason"}],
         "s2_repo":  str,
         "s2_tag":   str,
         "s2_commit": str,
@@ -626,9 +632,10 @@ async def resolve_qlever_refs(only_kg: list = None) -> dict:
     """
     kg_config = await KGConfig.from_git()
     skip_repos = {'semopenalex'}
-    overrides = PER_REPO_LAKEFS_OVERRIDES  # defined later in this module
+    overrides = PER_REPO_LAKEFS_OVERRIDES
 
     kg_refs: dict = {}
+    skipped: list = []
     for kg in kg_config.kgs:
         if not (kg.frink_options and kg.frink_options.lakefs_repo and kg.shortname):
             continue
@@ -637,18 +644,42 @@ async def resolve_qlever_refs(only_kg: list = None) -> dict:
         if only_kg and kg.shortname not in only_kg:
             continue
         repo = kg.frink_options.lakefs_repo
-        override = overrides.get(kg.shortname, {})
+        # Override lookup tries shortname first, then lakefs_repo. Lets the
+        # dict be keyed however a future contributor finds clearest.
+        override = overrides.get(kg.shortname) or overrides.get(repo) or {}
         if "ref" in override:
             ref = override["ref"]
         else:
             tag = await get_latest_tag(repo)
             ref = tag if tag else "main"
+        remote_path = override.get("remote_path", "nt/graph.nt.gz")
+
+        # Pre-flight: skip (don't fail) if the source file is missing.
+        try:
+            exists = await object_exists(repo, ref, remote_path)
+        except Exception as e:
+            exists = False
+            reason = f"stat failed: {e}"
+        else:
+            reason = "object not found"
+
+        if not exists:
+            logger.warning(f"Skipping {kg.shortname} ({repo}@{ref}:{remote_path}) — {reason}")
+            skipped.append({
+                "repo":        repo,
+                "shortname":   kg.shortname,
+                "ref":         ref,
+                "remote_path": remote_path,
+                "reason":      reason,
+            })
+            continue
+
         commit = await get_latest_commit(repo, ref)
         kg_refs[repo] = {
             "shortname":   kg.shortname,
             "ref":         ref,
             "commit":      commit,
-            "remote_path": override.get("remote_path", "nt/graph.nt.gz"),
+            "remote_path": remote_path,
         }
 
     s2_tag = await get_latest_tag(S2_LAKEFS_REPO)
@@ -657,6 +688,7 @@ async def resolve_qlever_refs(only_kg: list = None) -> dict:
     s2_commit = await get_latest_commit(S2_LAKEFS_REPO, s2_tag)
     return {
         "kg_refs":   kg_refs,
+        "skipped":   skipped,
         "s2_repo":   S2_LAKEFS_REPO,
         "s2_tag":    s2_tag,
         "s2_commit": s2_commit,

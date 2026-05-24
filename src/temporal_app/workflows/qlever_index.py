@@ -104,6 +104,22 @@ class QLeverIndexWorkflow:
             retry_policy=NO_RETRY,
         )
 
+        # Slack-report any KGs that were skipped due to missing source files.
+        if refs.get("skipped"):
+            lines = [
+                f"  • `{s['shortname']}` ({s['repo']}@{s['ref']}:{s['remote_path']}) — {s['reason']}"
+                for s in refs["skipped"]
+            ]
+            await workflow.execute_activity(
+                notify_slack,
+                args=[
+                    "⚠️ QLever federated index: skipping KGs with no source file:\n"
+                    + "\n".join(lines)
+                ],
+                start_to_close_timeout=QUICK_TIMEOUT,
+                retry_policy=NO_RETRY,
+            )
+
         # ── Phase 2: change detection ─────────────────────────────────────
         current_commits = {
             **{repo: meta["commit"] for repo, meta in refs["kg_refs"].items()},

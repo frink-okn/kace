@@ -6,7 +6,7 @@ uvicorn[all]
 aiofile
 aioboto3
 celery
-kubernetes
+kubernetes==31.0.0
 redis
 gunicorn
 semver

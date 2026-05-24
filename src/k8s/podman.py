@@ -26,24 +26,70 @@ config.load_incluster_config()
 # config.load_kube_config('/mnt/c/Users/kebedey/kubeconfig/kubeconfig-sterling-kebedey-kebedey')
 
 
+_TOKEN_FILE = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+
+
+def _log_token_diag():
+    """One-line diagnostic for the SA token file. Helps distinguish
+    'no token' vs 'malformed token' vs 'rotated token' when k8s answers
+    `system:anonymous` to an API call."""
+    try:
+        st = os.stat(_TOKEN_FILE)
+        with open(_TOKEN_FILE) as fh:
+            tok = fh.read().strip()
+        looks_jwt = tok.count(".") == 2 and len(tok) > 50
+        logger.info(
+            f"SA token diag: size={st.st_size}B mtime={st.st_mtime} "
+            f"jwt_shape={looks_jwt} head={tok[:20]!r}"
+        )
+    except Exception as e:
+        logger.error(f"SA token diag failed: {e}")
+
+
 def _fresh_api_client():
     """Build a brand-new ApiClient with a Configuration loaded from disk.
 
-    GKE (and any k8s >= 1.24) issues bound SA tokens that rotate ~hourly.
-    The kubernetes Python client caches the token in the default
-    Configuration, and any ApiClient created via `_core_v1()`
-    snapshots that Configuration through `get_default_copy()`. Long-running
-    pods therefore start hitting `system:anonymous` once the cached token
-    is rotated by the kubelet. We avoid the shared default entirely:
-    each call gets a fresh Configuration populated from the on-disk
-    token, wrapped in a fresh ApiClient.
+    Two things we need to handle:
+
+    1. GKE / k8s >= 1.24 rotate the projected SA token ~hourly. Older code
+       called `load_incluster_config()` once at module import, so the cached
+       token went stale and the client started hitting `system:anonymous`.
+       Fix: build a fresh Configuration per call.
+
+    2. Empirically, some versions of the kubernetes Python client (we pin
+       nothing in requirements.txt) fail to attach the Bearer header from
+       `Configuration.api_key` even though `load_incluster_config()` wrote
+       the right value. Observable symptom: a curl with the same token
+       authenticates correctly, but `client.CoreV1Api()` calls return
+       `system:anonymous`. Fix: after the loader runs, ALSO read the token
+       file ourselves and overwrite both `api_key` and the per-host default
+       headers with an explicit `Authorization: bearer ...`. This bypasses
+       any internal refresh-hook bookkeeping the client may have gotten
+       wrong.
     """
     cfg = client.Configuration()
     try:
         config.load_incluster_config(client_configuration=cfg)
     except Exception as e:
         logger.error(f"load_incluster_config failed: {e}")
+        _log_token_diag()
         raise
+
+    # Manual bearer-header override — see (2) above.
+    try:
+        with open(_TOKEN_FILE) as fh:
+            token = fh.read().strip()
+        if token:
+            cfg.api_key = {"authorization": f"bearer {token}"}
+            cfg.api_key_prefix = {}
+            api_client = client.ApiClient(configuration=cfg)
+            api_client.set_default_header("Authorization", f"Bearer {token}")
+            return api_client
+        else:
+            logger.warning("SA token file is empty; falling back to client default auth.")
+    except Exception as e:
+        logger.warning(f"Manual token attach failed, falling back to client default: {e}")
+
     return client.ApiClient(configuration=cfg)
 
 

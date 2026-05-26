@@ -379,15 +379,19 @@ S2_GRAPHS = [
     ("sudokn-geosparql.nt.gz",  "sudokn",     "https://purl.org/okn/frink/kg/sudokn#geosparql"),
 ]
 
+# Drops triples that declare a decimal value (e.g. "311119.0") as xsd:integer.
+# qlever's IndexBuilderMain refuses to parse these. The SUDOKN NAICS data has
+# them, and any KG that ingests SUDOKN nodes (e.g. secure-chain) inherits them.
+_DROP_DECIMAL_AS_INTEGER = r"""| grep -Ev '\.[0-9]+"\^\^<http://www\.w3\.org/2001/XMLSchema#integer>'"""
+
 # Per-shortname pipe suffix appended after `gunzip -c <file>` in the build command.
 # Required to match the reference qlever-index invocation.
 PER_REPO_INPUT_FILTERS = {
     "spatialkg":          '| grep -v "<http://stko-kwg.geog.ucsb.edu/lod/ontology/cellID>"',
-    "biobricks-aopwiki":  '| tail -n +28',
-    "biobricks-mesh":     '| tail -n +28',
-    # sudokn: drop triples that declare a decimal value (e.g. "311111.0") as
-    # xsd:integer — qlever's IndexBuilderMain refuses to parse these.
-    "sudokn":             r"""| grep -Ev '\.[0-9]+"\^\^<http://www\.w3\.org/2001/XMLSchema#integer>'""",
+    # "biobricks-aopwiki":  '| tail -n +28',
+    # "biobricks-mesh":     '| tail -n +28',
+    "sudokn":             _DROP_DECIMAL_AS_INTEGER,
+    "securechainkg":      _DROP_DECIMAL_AS_INTEGER,
 }
 
 # Overrides for where the source nt file lives in lakefs. Keys may be either

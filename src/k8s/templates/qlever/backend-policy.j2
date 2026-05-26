@@ -1,0 +1,13 @@
+apiVersion: networking.gke.io/v1
+kind: GCPBackendPolicy
+metadata:
+  name: {{ kg_name }}-qlever-backend-policy
+spec:
+  default:
+    timeoutSec: {{ backend_timeout_sec | default(3600) }}
+    connectionDraining:
+      drainingTimeoutSec: {{ backend_draining_sec | default(60) }}
+  targetRef:
+    group: ""
+    kind: Service
+    name: frink-{{ kg_name }}-qlever-server

@@ -9,10 +9,9 @@ spec:
     healthyThreshold: 2
     unhealthyThreshold: 2
     config:
-      type: HTTP
-      httpHealthCheck:
+      type: tcp
+      tcpHealthCheck:
         port: 7001
-        requestPath: /?query=ASK%20%7B%7D
   targetRef:
     group: ""
     kind: Service

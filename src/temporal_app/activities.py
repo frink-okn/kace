@@ -32,7 +32,8 @@ async def run_k8s_job(job_type: str, job_name: str, repo: str, branch: str,
                       additional_volume_mounts: list = None,
                       image: str = None, extra_pvcs: list = None,
                       read_only_default_mount: bool = False,
-                      pod_security_context: dict = None) -> str:
+                      pod_security_context: dict = None,
+                      configmap_overrides: dict = None) -> str:
     logger.info(f"Starting K8s job: {job_name} ({job_type})")
     # Inject GH_TOKEN from config if not explicitly provided.
     # This keeps secrets out of Temporal workflow history.
@@ -55,6 +56,7 @@ async def run_k8s_job(job_type: str, job_name: str, repo: str, branch: str,
         extra_pvcs=extra_pvcs,
         read_only_default_mount=read_only_default_mount,
         pod_security_context=pod_security_context,
+        configmap_overrides=configmap_overrides,
     )
     return job_name
 
@@ -424,10 +426,25 @@ async def prepare_qlever_job_specs(kg_refs: dict, s2_tag: str, only_kg: list = N
       - build_command: shell string for IndexBuilderMain (writes to /index/)
       - stxxl_memory:  string for --stxxl-memory (already part of build_command)
     """
+    import json as _json
+
     source_root  = app_config.qlever_source_path                  # /shared/qlever-source
     s2_local_dir = f"{source_root}/s2"
     index_dir    = "/index"                                       # mount of per-build output PVC
     stxxl_memory = app_config.qlever_indexer_stxxl_memory
+    settings_path = "/qlever/frink-qlever.settings.json"          # configmap mount in qlever-index-job.yaml
+
+    # The settings file is delivered via the job's configmap. We override its
+    # content (see configmap_overrides in the workflow) so num-triples-per-batch
+    # is config-driven. Too-small a batch on a multi-billion-triple build
+    # produces tens of thousands of partial vocabularies; merging that many
+    # exhausts fds/threads ("Resource temporarily unavailable"). Bigger
+    # batches → far fewer partial vocabs.
+    settings_json = _json.dumps({
+        "ascii-prefixes-only": False,
+        "num-triples-per-batch": app_config.qlever_num_triples_per_batch,
+        "parser-integer-overflow-behavior": "overflowing-integers-become-doubles",
+    })
 
     downloads = []
     for repo, meta in kg_refs.items():
@@ -449,8 +466,12 @@ async def prepare_qlever_job_specs(kg_refs: dict, s2_tag: str, only_kg: list = N
         })
 
     build_cmd_parts = [
-        f'ulimit -Sn 1048576; mkdir -p {index_dir} && cd {index_dir} && '
-        'IndexBuilderMain -i frink -s /qlever/frink-qlever.settings.json'
+        # Raise fd limit (-n) and process/thread limit (-u) before the build:
+        # the partial-vocab merge step opens many files and spawns many
+        # threads at once. `|| true` so a capped hard-limit doesn't abort.
+        f'ulimit -Sn 1048576 || true; ulimit -Su unlimited 2>/dev/null || true; '
+        f'mkdir -p {index_dir} && cd {index_dir} && '
+        f'IndexBuilderMain -i frink -s {settings_path}'
     ]
 
     for repo, meta in kg_refs.items():
@@ -476,6 +497,10 @@ async def prepare_qlever_job_specs(kg_refs: dict, s2_tag: str, only_kg: list = N
         "downloads": downloads,
         "build_command": ' '.join(build_cmd_parts),
         "stxxl_memory": stxxl_memory,
+        # Workflow feeds this to run_k8s_job as configmap_overrides so the
+        # qlever settings file (mounted from the job configmap) carries the
+        # config-driven num-triples-per-batch.
+        "configmap_overrides": {settings_path: settings_json},
     }
 
 @activity.defn

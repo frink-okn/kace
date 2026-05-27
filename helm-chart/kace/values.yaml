@@ -179,6 +179,7 @@ app_config:
   qlever_index_pvc_prefix: "kace-qlever-index-"
   qlever_index_previous_ttl_hours: "24"
   qlever_download_concurrency: "4"
+  qlever_num_triples_per_batch: "5000000"
 
 # Temporal server subchart
 temporal:

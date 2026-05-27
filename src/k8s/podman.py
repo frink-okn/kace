@@ -209,7 +209,8 @@ class JobMan:
                 resources=None, env_vars=None, additional_volume_mounts=None,
                 image: str = None, extra_pvcs: List[Dict] = None,
                 read_only_default_mount: bool = False,
-                pod_security_context: Dict = None):
+                pod_security_context: Dict = None,
+                configmap_overrides: Dict[str, str] = None):
         """
         Args:
             extra_pvcs: list of dicts with keys
@@ -223,6 +224,12 @@ class JobMan:
             read_only_default_mount: when True, mount the default `data`
                 volume at /mnt/repo as read-only. Used by the federated
                 qlever-index job (it must not write to source files).
+            configmap_overrides: {configmap_path: content} — replace the
+                content of a configmap file declared in the job template
+                (matched by its full path key, e.g.
+                "/qlever/frink-qlever.settings.json"). Lets callers supply
+                config-driven file contents without baking them into the
+                static template.
         """
         _reload_k8s_auth()
         if env_vars is None:
@@ -270,6 +277,8 @@ class JobMan:
             cm_data = {}
             for path, content in job_config["configmap"].items():
                 filename = os.path.basename(path)
+                if configmap_overrides and path in configmap_overrides:
+                    content = configmap_overrides[path]
                 cm_data[filename] = content
             self.ensure_configmap(job_type, cm_data)
             

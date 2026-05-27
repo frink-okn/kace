@@ -215,6 +215,7 @@ class QLeverIndexWorkflow:
                     "run_as_group": 0,
                     "fs_group":     0,
                 },
+                specs["configmap_overrides"],                    # configmap_overrides: config-driven qlever settings.json
             ],
             start_to_close_timeout=JOB_SUBMIT_TIMEOUT,
             retry_policy=NO_RETRY,

@@ -178,10 +178,11 @@ class ServerDeploymentManager:
         plural = "healthcheckpolicies"
 
         try:
-            k8s_client.get_namespaced_custom_object(
+            existing = k8s_client.get_namespaced_custom_object(
                 group=group, version=version, namespace=self.namespace, plural=plural, name=healthcheck_name
             )
-            k8s_client.patch_namespaced_custom_object(
+            healthcheck_body.setdefault("metadata", {})["resourceVersion"] = existing["metadata"]["resourceVersion"]
+            k8s_client.replace_namespaced_custom_object(
                 group=group, version=version, namespace=self.namespace, plural=plural, name=healthcheck_name,
                 body=healthcheck_body
             )

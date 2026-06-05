@@ -151,6 +151,23 @@ async def download_files(repo: str, branch: str, extensions: List = None, exclud
 PARALLEL_PARTS_DEFAULT = int(os.environ.get("LAKEFS_DOWNLOAD_PARTS", "8"))
 PARALLEL_THRESHOLD_BYTES = int(os.environ.get("LAKEFS_PARALLEL_THRESHOLD", str(64 * 1024 * 1024)))  # 64MiB
 
+# Tighter per-socket read window for the qlever index download path.
+# LakeFS occasionally drip-feeds chunks; a long window lets slow-trickle
+# transfers pass under the radar and produce sparse partial files.
+QLEVER_SOCK_READ_SECS = int(os.environ.get("LAKEFS_QLEVER_SOCK_READ", "120"))
+
+# Per-chunk activity heartbeat cadence inside fetch_part. Best-effort:
+# silently no-ops outside a temporal activity context.
+_HEARTBEAT_INTERVAL_SECS = 30
+
+
+def _activity_heartbeat(detail: dict) -> None:
+    try:
+        from temporalio import activity as _act
+        _act.heartbeat(detail)
+    except Exception:
+        pass
+
 
 async def _stat_size(file_name, repo, branch, session) -> Optional[int]:
     stats_url = (f'{config.lakefs_url}/api/v1/repositories/{urllib.parse.quote_plus(repo)}/refs/'
@@ -204,6 +221,7 @@ async def download_file(file_name, repo, branch, download_path,
 
         max_attempts = 5
         base_delay   = 2
+        loop = asyncio.get_event_loop()
 
         async def fetch_part(i: int):
             start = i * part_size
@@ -211,6 +229,7 @@ async def download_file(file_name, repo, branch, download_path,
             if start > end:
                 return
             offset = start  # advances across retries — never re-download bytes already pwritten
+            last_hb = loop.time()
             for attempt in range(1, max_attempts + 1):
                 if offset > end:
                     return
@@ -222,6 +241,15 @@ async def download_file(file_name, repo, branch, download_path,
                         async for buf in resp.content.iter_chunked(1024 * 1024):
                             await asyncio.to_thread(os.pwrite, fd, buf, offset)
                             offset += len(buf)
+                            now = loop.time()
+                            if now - last_hb >= _HEARTBEAT_INTERVAL_SECS:
+                                _activity_heartbeat({
+                                    "file":   file_name,
+                                    "part":   i,
+                                    "offset": offset,
+                                    "end":    end,
+                                })
+                                last_hb = now
                     return
                 except (asyncio.TimeoutError, aiohttp.ClientError, OSError) as e:
                     if attempt >= max_attempts:
@@ -232,6 +260,13 @@ async def download_file(file_name, repo, branch, download_path,
                         f"part {i} {file_name}: attempt {attempt} failed ({type(e).__name__}: {e}), "
                         f"retry in {delay}s (resuming from offset {offset})"
                     )
+                    _activity_heartbeat({
+                        "file":    file_name,
+                        "part":    i,
+                        "offset":  offset,
+                        "attempt": attempt,
+                        "retry":   True,
+                    })
                     await asyncio.sleep(delay)
 
         await asyncio.gather(*[fetch_part(i) for i in range(parts)])
@@ -552,16 +587,24 @@ async def object_exists(repo: str, ref: str, remote_file_path: str) -> bool:
         return size is not None
 
 
+async def get_object_size(repo: str, ref: str, remote_file_path: str) -> Optional[int]:
+    """Lakefs `objects/stat` returning size_bytes (or None if absent)."""
+    cookie = await login_and_get_cookies(config.lakefs_url, config.lakefs_access_key, config.lakefs_secret_key)
+    timeout = aiohttp.ClientTimeout(total=30, sock_read=15, sock_connect=10)
+    async with aiohttp.ClientSession(cookies=cookie, timeout=timeout) as session:
+        return await _stat_size(remote_file_path, repo, ref, session)
+
+
 async def download_file_at_ref(repo: str, ref: str, remote_file_path: str, local_download_path: str):
     """Download a single object from `repo` at an explicit ref (branch/tag/commit).
 
-    Uses aiohttp ClientTimeout with no overall total cap and generous per-socket
-    read/connect windows; default aiohttp total=5min times out mid-stream for
-    multi-GB objects (e.g. wikidata graph.nt.gz).
+    sock_read kept tight (QLEVER_SOCK_READ_SECS) so slow-trickle responses
+    surface as TimeoutErrors and engage the per-part retry loop, rather than
+    quietly producing sparse partial files over many hours.
     """
     cookie = await login_and_get_cookies(config.lakefs_url, config.lakefs_access_key, config.lakefs_secret_key)
     connector = aiohttp.TCPConnector(limit_per_host=8)
-    timeout = aiohttp.ClientTimeout(total=None, sock_read=600, sock_connect=60)
+    timeout = aiohttp.ClientTimeout(total=None, sock_read=QLEVER_SOCK_READ_SECS, sock_connect=60)
     async with aiohttp.ClientSession(cookies=cookie, connector=connector, timeout=timeout) as session:
         response = await download_file(remote_file_path, repo, ref, local_download_path, session)
         if not response:
@@ -605,7 +648,7 @@ async def download_file_from_latest_tag(repo: str, remote_file_path: str, local_
 
     cookie = await login_and_get_cookies(config.lakefs_url, config.lakefs_access_key, config.lakefs_secret_key)
     connector = aiohttp.TCPConnector(limit_per_host=8)
-    timeout = aiohttp.ClientTimeout(total=None, sock_read=600, sock_connect=60)
+    timeout = aiohttp.ClientTimeout(total=None, sock_read=QLEVER_SOCK_READ_SECS, sock_connect=60)
     async with aiohttp.ClientSession(cookies=cookie, connector=connector, timeout=timeout) as session:
         response = await download_file(remote_file_path, repo, latest_tag, local_download_path, session)
         if not response:

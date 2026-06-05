@@ -35,8 +35,13 @@ with workflow.unsafe.imports_passed_through():
 
 # Phase-3 PVC creation, GC, and ConfigMap touches are quick.
 QUICK_TIMEOUT       = timedelta(minutes=5)
-# Per-file download. Wikidata can be huge.
-DOWNLOAD_TIMEOUT    = timedelta(hours=12)
+# Per-file download. Wikidata can be huge; bumped from 12h to 24h after a
+# geoconnex sparse-partial run consumed the prior cap.
+DOWNLOAD_TIMEOUT    = timedelta(hours=24)
+# Cap silent stall time inside a download. The activity heartbeats from each
+# byte-range part; this catches dead workers and indefinite drip-feed reads
+# long before start_to_close fires.
+DOWNLOAD_HEARTBEAT  = timedelta(minutes=10)
 # Submitting the indexer Job returns immediately; the wait is in the watcher.
 JOB_SUBMIT_TIMEOUT  = timedelta(minutes=10)
 # Multi-day federated index build; watch activity heartbeats so worker bounces
@@ -45,6 +50,16 @@ BUILD_WATCH_TIMEOUT = timedelta(days=7)
 HEARTBEAT_TIMEOUT   = timedelta(minutes=5)
 
 NO_RETRY = RetryPolicy(maximum_attempts=1)
+# Downloads are now resumable-on-retry only in the sense that the activity
+# re-runs from scratch; per-part retries inside the activity handle transient
+# transport errors. Limit Temporal-level retries so a truly bad object does
+# not loop forever.
+DOWNLOAD_RETRY = RetryPolicy(
+    maximum_attempts=4,
+    initial_interval=timedelta(seconds=30),
+    backoff_coefficient=2.0,
+    maximum_interval=timedelta(minutes=10),
+)
 
 INDEX_MOUNT_PATH = "/index"
 SHARED_VOLUME_NAME = "data"
@@ -168,7 +183,8 @@ class QLeverIndexWorkflow:
                     download_file_lakefs,
                     args=[dl["repo"], dl["remote_path"], dl["local_path"], dl.get("ref")],
                     start_to_close_timeout=DOWNLOAD_TIMEOUT,
-                    retry_policy=NO_RETRY,
+                    heartbeat_timeout=DOWNLOAD_HEARTBEAT,
+                    retry_policy=DOWNLOAD_RETRY,
                 )
 
         if specs["downloads"]:

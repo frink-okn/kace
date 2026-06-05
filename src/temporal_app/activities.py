@@ -1,7 +1,7 @@
 from temporalio import activity
 from k8s.podman import JobMan
 from k8s import fuseki_server_manager, ldf_server_manager
-from lakefs_util.io_util import resolve_commit, download_file_from_latest_tag, download_files, upload_files, clean_up_files, resolve_future_tag, get_lakefs_prefix_size, download_hdt_files, get_latest_commit, get_latest_tag, download_file_at_ref, object_exists
+from lakefs_util.io_util import resolve_commit, download_file_from_latest_tag, download_files, upload_files, clean_up_files, resolve_future_tag, get_lakefs_prefix_size, download_hdt_files, get_latest_commit, get_latest_tag, download_file_at_ref, object_exists, get_object_size
 from canary.slack import slack_canary
 from canary.mail import mail_canary
 from models.lakefs_models import LakefsMergeActionModel, LakefTagCreationModel
@@ -276,14 +276,39 @@ async def download_file_lakefs(repo: str, remote_path: str, local_path: str, ref
         await download_file_at_ref(repo, ref, remote_path, local_path)
     else:
         await download_file_from_latest_tag(repo, remote_path, local_path)
-    # Resolve-time pre-flight already filtered out missing sources, so a
-    # zero-byte file here means an in-flight transport failure rather than
-    # an absent object. Treat as fatal — the build needs a real file.
-    if not os.path.exists(local_path) or os.path.getsize(local_path) == 0:
+    if not os.path.exists(local_path):
         raise Exception(
-            f"Download produced empty/no file at {local_path} for "
-            f"{repo}@{ref or 'latest-tag'}:{remote_path}. Network/transport error suspected."
+            f"Download produced no file at {local_path} for "
+            f"{repo}@{ref or 'latest-tag'}:{remote_path}."
         )
+    nominal = os.path.getsize(local_path)
+    if nominal == 0:
+        raise Exception(
+            f"Download produced empty file at {local_path} for "
+            f"{repo}@{ref or 'latest-tag'}:{remote_path}."
+        )
+    # Detect sparse / partial parallel downloads. ftruncate sets the nominal
+    # size up front; unwritten ranges show up as holes (st_blocks*512 < size).
+    # Comparing against the LakeFS-reported object size catches both sparse
+    # writes and short-stream truncations that getsize() alone misses.
+    if ref:
+        expected = await get_object_size(repo, ref, remote_path)
+        if expected is not None:
+            if nominal != expected:
+                raise Exception(
+                    f"Download size mismatch for {repo}@{ref}:{remote_path} -> {local_path}: "
+                    f"local nominal={nominal}, lakefs={expected}."
+                )
+            allocated_bytes = os.stat(local_path).st_blocks * 512
+            # Allow a small slack for filesystems that report blocks loosely
+            # (eg compression, alignment) — sparse-partial files are far below
+            # this threshold (~80% range on the failing geoconnex run).
+            if allocated_bytes < int(expected * 0.99):
+                raise Exception(
+                    f"Sparse / partial download for {repo}@{ref}:{remote_path} -> {local_path}: "
+                    f"only {allocated_bytes} of {expected} bytes written. "
+                    f"One or more byte-range parts did not complete."
+                )
 
 
 @activity.defn

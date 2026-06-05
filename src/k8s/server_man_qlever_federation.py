@@ -23,6 +23,19 @@ class QLeverFederationServerDeploymentManager(QLeverServerDeploymentManager):
     def __init__(self, templates_dir, namespace):
         super().__init__(templates_dir, namespace, use_private_pvc=False)
 
+    def get_deployment(self, parameters: Dict[str, Any]) -> Dict:
+        """Render without rewriting `pvc_name`.
+
+        The parent class (QLeverServerDeploymentManager) injects
+        `self.pvc_name` (= shared_pvc_name) when `use_private_pvc=False`. For
+        the federation server the PVC is the per-build index PVC supplied
+        by the workflow — never the shared lakefs source PVC. Bypass the
+        parent override.
+        """
+        import yaml
+        deployment_template = self.templates.get_template("server-deployment.j2")
+        return yaml.safe_load(deployment_template.render(parameters))
+
     def create_all(self, parameters: Dict[str, Any], annotations: Dict[str, str] = None, resources: Dict[str, Any] = None) -> None:
         if app_config.networking_mode == "gateway":
             self.create_or_update_httproute(parameters=parameters, annotations=annotations)

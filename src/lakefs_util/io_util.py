@@ -103,7 +103,7 @@ async def download_files(repo: str, branch: str, extensions: List = None, exclud
     cookie = await login_and_get_cookies(config.lakefs_url, config.lakefs_access_key, config.lakefs_secret_key)
     all_files = []
     files_downloaded = []
-    connector = aiohttp.TCPConnector(limit_per_host=8)
+    connector = _build_connector(limit_per_host=8)
     timeout = aiohttp.ClientTimeout(total=None, sock_read=600, sock_connect=60)
     async with aiohttp.ClientSession(cookies=cookie, connector=connector, timeout=timeout) as session:
         has_more = True
@@ -150,6 +150,26 @@ async def download_files(repo: str, branch: str, extensions: List = None, exclud
 
 PARALLEL_PARTS_DEFAULT = int(os.environ.get("LAKEFS_DOWNLOAD_PARTS", "8"))
 PARALLEL_THRESHOLD_BYTES = int(os.environ.get("LAKEFS_PARALLEL_THRESHOLD", str(64 * 1024 * 1024)))  # 64MiB
+
+
+def _build_connector(limit_per_host: int = 8) -> aiohttp.TCPConnector:
+    """Build a TCPConnector that uses aiodns (AsyncResolver) when available.
+
+    Default aiohttp resolver is ThreadedResolver, which calls
+    socket.getaddrinfo via the asyncio default executor. Under fan-out
+    (many concurrent connections + many asyncio.to_thread users in the
+    same worker), the executor thread pool saturates and starves other
+    blocking calls (eg the k8s client polls in watch_k8s_job_sync).
+    AsyncResolver delegates to aiodns and stays off the executor.
+    """
+    try:
+        resolver = aiohttp.AsyncResolver()
+    except (ImportError, RuntimeError):
+        # aiodns not installed or no event loop yet — fall back to default.
+        resolver = None
+    if resolver is not None:
+        return aiohttp.TCPConnector(limit_per_host=limit_per_host, resolver=resolver)
+    return aiohttp.TCPConnector(limit_per_host=limit_per_host)
 
 # Tighter per-socket read window for the qlever index download path.
 # LakeFS occasionally drip-feeds chunks; a long window lets slow-trickle
@@ -281,7 +301,7 @@ async def download_hdt_files(repo: str, branch: str, kg_name: str, hdt_path: str
     # @TODO download into a temp name then rename
     cookie = await login_and_get_cookies(config.lakefs_url, config.lakefs_access_key, config.lakefs_secret_key)
     all_files = []
-    connector = aiohttp.TCPConnector(limit_per_host=8)
+    connector = _build_connector(limit_per_host=8)
     timeout = aiohttp.ClientTimeout(total=None, sock_read=600, sock_connect=60)
     async with aiohttp.ClientSession(cookies=cookie, connector=connector, timeout=timeout) as session:
         has_more = True
@@ -346,7 +366,7 @@ async def download_hdt_files_to_dir(repo: str, ref: str, dest_dir: str, hdt_path
     os.makedirs(dest_dir, exist_ok=True)
     cookie = await login_and_get_cookies(config.lakefs_url, config.lakefs_access_key, config.lakefs_secret_key)
     all_files = []
-    connector = aiohttp.TCPConnector(limit_per_host=8)
+    connector = _build_connector(limit_per_host=8)
     timeout = aiohttp.ClientTimeout(total=None, sock_read=600)
     async with aiohttp.ClientSession(cookies=cookie, connector=connector, timeout=timeout) as session:
         has_more = True
@@ -603,7 +623,7 @@ async def download_file_at_ref(repo: str, ref: str, remote_file_path: str, local
     quietly producing sparse partial files over many hours.
     """
     cookie = await login_and_get_cookies(config.lakefs_url, config.lakefs_access_key, config.lakefs_secret_key)
-    connector = aiohttp.TCPConnector(limit_per_host=8)
+    connector = _build_connector(limit_per_host=8)
     timeout = aiohttp.ClientTimeout(total=None, sock_read=QLEVER_SOCK_READ_SECS, sock_connect=60)
     async with aiohttp.ClientSession(cookies=cookie, connector=connector, timeout=timeout) as session:
         response = await download_file(remote_file_path, repo, ref, local_download_path, session)
@@ -647,7 +667,7 @@ async def download_file_from_latest_tag(repo: str, remote_file_path: str, local_
     logger.info(f"Latest tag for {repo} is {latest_tag}. Downloading {remote_file_path}...")
 
     cookie = await login_and_get_cookies(config.lakefs_url, config.lakefs_access_key, config.lakefs_secret_key)
-    connector = aiohttp.TCPConnector(limit_per_host=8)
+    connector = _build_connector(limit_per_host=8)
     timeout = aiohttp.ClientTimeout(total=None, sock_read=QLEVER_SOCK_READ_SECS, sock_connect=60)
     async with aiohttp.ClientSession(cookies=cookie, connector=connector, timeout=timeout) as session:
         response = await download_file(remote_file_path, repo, latest_tag, local_download_path, session)

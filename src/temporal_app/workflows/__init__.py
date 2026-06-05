@@ -3,6 +3,7 @@ from .neo4j_conversion import Neo4jConversionWorkflow
 from .deployment import DeploymentWorkflow
 from .qlever_index import QLeverIndexWorkflow
 from .qlever_deployment import QLeverDeploymentWorkflow
+from .qlever_federation_deployment import QLeverFederationDeploymentWorkflow
 from .fuseki_deployment import FusekiDeploymentWorkflow
 from .ldf_sync import LDFSyncWorkflow
 
@@ -12,6 +13,7 @@ __all__ = [
     "DeploymentWorkflow",
     "QLeverIndexWorkflow",
     "QLeverDeploymentWorkflow",
+    "QLeverFederationDeploymentWorkflow",
     "FusekiDeploymentWorkflow",
     "LDFSyncWorkflow",
 ]

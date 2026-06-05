@@ -15,7 +15,7 @@ downstream workflow that consumes `state.build_id_serving`.
 import asyncio
 from datetime import timedelta
 from temporalio import workflow
-from temporalio.common import RetryPolicy
+from temporalio.common import RetryPolicy, WorkflowIDReusePolicy
 
 with workflow.unsafe.imports_passed_through():
     from ..activities import (
@@ -270,6 +270,20 @@ class QLeverIndexWorkflow:
             ],
             start_to_close_timeout=QUICK_TIMEOUT,
             retry_policy=NO_RETRY,
+        )
+
+        # ── Phase 8: kick off federation server rollover (fire-and-forget) ─
+        # ABANDON so this workflow's completion does not affect the deploy.
+        # TERMINATE_IF_RUNNING so a stale rollover from a prior build is
+        # superseded by the fresh one (matches the single-flight contract
+        # also enforced by the /trigger_qlever_federation_deploy endpoint).
+        await workflow.start_child_workflow(
+            "QLeverFederationDeploymentWorkflow",
+            args=[False, None],
+            id="qlever-federation-deploy",
+            task_queue="frink-temporal-queue",
+            parent_close_policy=workflow.ParentClosePolicy.ABANDON,
+            id_reuse_policy=WorkflowIDReusePolicy.TERMINATE_IF_RUNNING,
         )
 
         return {

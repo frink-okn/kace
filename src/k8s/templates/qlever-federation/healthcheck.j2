@@ -1,0 +1,18 @@
+apiVersion: networking.gke.io/v1
+kind: HealthCheckPolicy
+metadata:
+  name: federation-qlever-health-check
+spec:
+  default:
+    checkIntervalSec: 10
+    timeoutSec: 5
+    healthyThreshold: 2
+    unhealthyThreshold: 2
+    config:
+      type: TCP
+      tcpHealthCheck:
+        port: 7001
+  targetRef:
+    group: ""
+    kind: Service
+    name: frink-federation-qlever-server

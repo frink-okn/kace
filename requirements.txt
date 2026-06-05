@@ -16,3 +16,4 @@ jinja2
 slack-sdk
 httpx
 temporalio
+aiodns

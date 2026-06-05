@@ -65,7 +65,12 @@ async def watch_k8s_job_sync(job_name: str, poll_interval: int = 5) -> None:
     """Poll a K8s Job until terminal. Heartbeats Temporal every poll so the
     activity can outlive worker restarts (paired with `heartbeat_timeout` on
     the workflow side) and won't be killed by start_to_close_timeout when the
-    underlying Job legitimately runs for days."""
+    underlying Job legitimately runs for days.
+
+    The kubernetes client is sync; calls are offloaded with asyncio.to_thread
+    so the event loop stays responsive when multiple watchers run alongside
+    other activities (downloads, conversions) on the same worker.
+    """
     from kubernetes import client as k8s_client
     import asyncio as _asyncio
     logger.info(f"Watching K8s job: {job_name}")
@@ -73,7 +78,11 @@ async def watch_k8s_job_sync(job_name: str, poll_interval: int = 5) -> None:
     batch_v1 = k8s_client.BatchV1Api()
     while True:
         try:
-            job = batch_v1.read_namespaced_job(name=job_name, namespace=job_man.namespace)
+            job = await _asyncio.to_thread(
+                batch_v1.read_namespaced_job,
+                name=job_name,
+                namespace=job_man.namespace,
+            )
         except k8s_client.exceptions.ApiException as e:
             raise Exception(f"Failed to fetch Job '{job_name}': {e}, likely the job was never created.")
         succeeded     = job.status.succeeded or 0
@@ -88,7 +97,7 @@ async def watch_k8s_job_sync(job_name: str, poll_interval: int = 5) -> None:
             logger.info(f"Job '{job_name}' completed successfully.")
             return
         if failed > backoff_limit:
-            pod_info = job_man._get_pod_logs_for_job(job_name)
+            pod_info = await _asyncio.to_thread(job_man._get_pod_logs_for_job, job_name)
             raise Exception(f"Job '{job_name}' failed after {failed} attempts.\n{pod_info}")
         await _asyncio.sleep(poll_interval)
 
@@ -843,3 +852,112 @@ async def apply_ldf_config_and_rollout() -> str:
     # Force a rolling restart by re-patching annotation (idempotent)
     ldf_server_manager.rolling_restart(config_hash)
     return config_hash
+
+
+# ── QLever federation server (/federation) ────────────────────────────────
+@activity.defn
+async def resolve_qlever_federation_build_id(use_previous: bool = False, build_id: str = None) -> dict:
+    """Pick which index PVC to mount at /federation.
+
+    Precedence:
+      1. explicit `build_id` arg if non-empty
+      2. `build_id_previous` if `use_previous=True`
+      3. `build_id_serving`
+
+    Returns {"build_id", "pvc_name", "image", "source": "explicit|previous|serving"}.
+    Raises if the chosen build_id is empty or its PVC does not exist.
+    """
+    from k8s import qlever_state, qlever_pvc
+    from kubernetes import client
+    from kubernetes.client.rest import ApiException
+
+    state = qlever_state.read_state()
+    if build_id:
+        source = "explicit"
+        chosen = build_id
+    elif use_previous:
+        source = "previous"
+        chosen = state.get("build_id_previous")
+    else:
+        source = "serving"
+        chosen = state.get("build_id_serving")
+    if not chosen:
+        raise RuntimeError(
+            f"No build_id available for federation deploy (source={source}, state={state})."
+        )
+    pvc_name = qlever_pvc.pvc_name(chosen)
+    api = client.CoreV1Api()
+    try:
+        api.read_namespaced_persistent_volume_claim(name=pvc_name, namespace=app_config.k8s_namespace)
+    except ApiException as e:
+        if e.status == 404:
+            raise RuntimeError(f"Build PVC {pvc_name} not found for build_id={chosen}.")
+        raise
+    image = state.get("image") or app_config.qlever_image
+    return {
+        "build_id":          chosen,
+        "pvc_name":          pvc_name,
+        "image":             image,
+        "source":            source,
+        "federation_prefix": app_config.qlever_federation_prefix,
+    }
+
+
+@activity.defn
+async def deploy_qlever_federation(build_id: str, pvc_name: str, image: str) -> dict:
+    """Apply the federated qlever-server Deployment/Service/HTTPRoute/HealthCheck/BackendPolicy.
+
+    The Deployment uses `strategy: Recreate` so the old pod releases the prior
+    PVC before the new pod tries to mount it (RWO PVC = at-most-one-pod).
+    Service + HTTPRoute names are stable across rollovers, so external clients
+    never see the backendRef change.
+    """
+    from k8s import qlever_federation_server_manager
+
+    memory = app_config.qlever_federation_memory
+    cpu = app_config.qlever_federation_cpu
+
+    total_mib = _memory_str_to_mib(memory)
+    cache_mib = int(total_mib * app_config.qlever_federation_cache_pct)
+    entry_mib = max(cache_mib // 4, 1)
+    qlever_args = ["-m", f"{cache_mib}M", "-c", f"{cache_mib}M", "-e", f"{entry_mib}M"]
+    if app_config.qlever_federation_extra_args:
+        qlever_args.extend(app_config.qlever_federation_extra_args)
+
+    parameters = {
+        "build_id":           build_id,
+        "pvc_name":           pvc_name,
+        "qlever_image":       image,
+        "index_basename":     app_config.qlever_federation_index_basename,
+        "federation_prefix":  app_config.qlever_federation_prefix,
+        "host_name":          app_config.frink_address.replace("https://", "").replace("http://", "").rstrip("/"),
+        "cpu":                cpu,
+        "memory":             memory,
+        "qlever_args":        qlever_args,
+    }
+    annotations = {
+        "kace.frink/build-id":  build_id,
+        "kace.frink/index-pvc": pvc_name,
+    }
+    resources = {
+        "requests": {"cpu": cpu, "memory": memory},
+        "limits":   {"cpu": cpu, "memory": memory},
+    }
+
+    logger.info(f"Deploying federated qlever-server build_id={build_id} pvc={pvc_name}")
+    qlever_federation_server_manager.create_all(
+        parameters=parameters,
+        annotations=annotations,
+        resources=resources,
+    )
+
+    server_up = qlever_federation_server_manager.wait_for_services_to_be_running(
+        parameters=parameters,
+        annotations=annotations,
+        max_retries=12,
+        initial_delay=5.0,
+    )
+    if not server_up:
+        raise Exception(f"Federation qlever-server did not become healthy (build_id={build_id}).")
+
+    return {"build_id": build_id, "pvc": pvc_name, "deployment": "frink-federation-qlever-server"}

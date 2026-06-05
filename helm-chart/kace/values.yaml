@@ -180,6 +180,13 @@ app_config:
   qlever_index_previous_ttl_hours: "24"
   qlever_download_concurrency: "4"
   qlever_num_triples_per_batch: "5000000"
+  # QLever federation server (/federation)
+  qlever_federation_cpu: "8"
+  qlever_federation_memory: "84Gi"
+  qlever_federation_cache_pct: "0.30"
+  qlever_federation_index_basename: "frink"
+  qlever_federation_prefix: "federation"
+  qlever_federation_extra_args: ""
 
 # Temporal server subchart
 temporal:

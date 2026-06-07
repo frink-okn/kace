@@ -748,6 +748,41 @@ async def resolve_qlever_refs(only_kg: list = None) -> dict:
             "remote_path": remote_path,
         }
 
+    # Wikidata is not in okn-registry kgs.yaml with frink-options (entry has
+    # no `frink-options` block), so the loop above drops it. Inject it
+    # explicitly using the same path/ref defaults as PER_REPO_LAKEFS_OVERRIDES
+    # so the federated index always covers it.
+    wikidata_repo = "wikidata"
+    wikidata_shortname = "wikidata"
+    if not only_kg or wikidata_shortname in only_kg:
+        wd_override = PER_REPO_LAKEFS_OVERRIDES.get(wikidata_shortname) or {}
+        wd_ref = wd_override.get("ref", "main")
+        wd_remote_path = wd_override.get("remote_path", "graph.nt.gz")
+        try:
+            wd_exists = await object_exists(wikidata_repo, wd_ref, wd_remote_path)
+        except Exception as e:
+            wd_exists = False
+            wd_reason = f"stat failed: {e}"
+        else:
+            wd_reason = "object not found"
+        if wd_exists:
+            wd_commit = await get_latest_commit(wikidata_repo, wd_ref)
+            kg_refs[wikidata_repo] = {
+                "shortname":   wikidata_shortname,
+                "ref":         wd_ref,
+                "commit":      wd_commit,
+                "remote_path": wd_remote_path,
+            }
+        else:
+            logger.warning(f"Skipping {wikidata_shortname} ({wikidata_repo}@{wd_ref}:{wd_remote_path}) — {wd_reason}")
+            skipped.append({
+                "repo":        wikidata_repo,
+                "shortname":   wikidata_shortname,
+                "ref":         wd_ref,
+                "remote_path": wd_remote_path,
+                "reason":      wd_reason,
+            })
+
     s2_tag = await get_latest_tag(S2_LAKEFS_REPO)
     if not s2_tag:
         raise Exception(f"No tags on '{S2_LAKEFS_REPO}' repo; cannot pin s2 sources")

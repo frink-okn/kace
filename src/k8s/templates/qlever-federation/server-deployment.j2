@@ -1,0 +1,55 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frink-federation-qlever-server
+  labels:
+    app: frink-federation-qlever-server
+    kace.frink/role: qlever-federation
+  annotations:
+    kace.frink/build-id: "{{ build_id }}"
+    kace.frink/index-pvc: "{{ pvc_name }}"
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: frink-federation-qlever-server
+  template:
+    metadata:
+      labels:
+        app: frink-federation-qlever-server
+        kace.frink/role: qlever-federation
+      annotations:
+        kace.frink/build-id: "{{ build_id }}"
+        kace.frink/index-pvc: "{{ pvc_name }}"
+    spec:
+      containers:
+      - name: qlever-server
+        image: {{ qlever_image }}
+        command:
+        - ServerMain
+        args:
+        - "-i"
+        - "/index/{{ index_basename }}"
+        - "-p"
+        - "7001"
+        {% for arg in qlever_args %}
+        - "{{ arg }}"
+        {% endfor %}
+        ports:
+        - containerPort: 7001
+        resources:
+          requests:
+            cpu: "{{ cpu }}"
+            memory: "{{ memory }}"
+          limits:
+            memory: "{{ memory }}"
+        volumeMounts:
+        - name: index
+          mountPath: /index
+          readOnly: true
+      volumes:
+      - name: index
+        persistentVolumeClaim:
+          claimName: {{ pvc_name }}

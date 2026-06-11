@@ -87,6 +87,7 @@ rules:
     - "networking.gke.io"
   resources:
     - "healthcheckpolicies"
+    - "gcpbackendpolicies"
   verbs:
     - create
     - delete

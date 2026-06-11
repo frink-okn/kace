@@ -10,7 +10,7 @@ is keyed by build_id so that:
 """
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional
-from kubernetes import client
+from kubernetes import client, config as k8s_config
 from kubernetes.client.rest import ApiException
 from config import config as app_config
 
@@ -19,8 +19,34 @@ def pvc_name(build_id: str) -> str:
     return f"{app_config.qlever_index_pvc_prefix}{build_id}"
 
 
+def _reload_k8s_auth():
+    # legacy no-op
+    pass
+
+
+_TOKEN_FILE = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+
+
+def _fresh_api_client():
+    """See podman._fresh_api_client for rationale."""
+    cfg = client.Configuration()
+    k8s_config.load_incluster_config(client_configuration=cfg)
+    try:
+        with open(_TOKEN_FILE) as fh:
+            token = fh.read().strip()
+        if token:
+            cfg.api_key = {"authorization": f"bearer {token}"}
+            cfg.api_key_prefix = {}
+            api_client = client.ApiClient(configuration=cfg)
+            api_client.set_default_header("Authorization", f"Bearer {token}")
+            return api_client
+    except Exception:
+        pass
+    return client.ApiClient(configuration=cfg)
+
+
 def _api() -> client.CoreV1Api:
-    return client.CoreV1Api()
+    return client.CoreV1Api(api_client=_fresh_api_client())
 
 
 def create_index_pvc(build_id: str, image: str) -> str:

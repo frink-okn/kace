@@ -316,5 +316,43 @@ async def trigger_qlever_index(only_kg: list = Body(None,
     }
 
 
+@app.post("/trigger_qlever_federation_deploy")
+async def trigger_qlever_federation_deploy(
+    use_previous: bool = Body(False,
+        description="If true, mount the previous build PVC (build_id_previous) "
+                    "instead of the currently-serving one. Rollback path."),
+    build_id: str = Body(None,
+        description="Explicit build_id override. Wins over use_previous. "
+                    "Useful for pinning a specific historical PVC."),
+):
+    """Roll over the federated qlever-server (`/federation`) to a build PVC.
+
+    Default: serve the build_id currently marked `serving` in
+    `kace-qlever-state`. Pass `use_previous=true` for n-1, or `build_id=...`
+    for an explicit pin. Single-flight via workflow id
+    `qlever-federation-deploy`.
+    """
+    workflow_id = "qlever-federation-deploy"
+    client = await get_client()
+    cancelled = await cancel_existing_workflow(client, workflow_id)
+    if cancelled:
+        slack_canary.send_message(
+            "🔄 Cancelled in-flight federation deploy to start a new one."
+        )
+    handle = await client.start_workflow(
+        "QLeverFederationDeploymentWorkflow",
+        args=[use_previous, build_id],
+        id=workflow_id,
+        task_queue="frink-temporal-queue",
+    )
+    return {
+        "message":     "Started federated QLever server deployment.",
+        "workflow_id": handle.id,
+        "run_id":      handle.result_run_id,
+        "use_previous": use_previous,
+        "build_id":    build_id,
+    }
+
+
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=9899)

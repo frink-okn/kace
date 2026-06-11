@@ -24,6 +24,40 @@ class QLeverServerDeploymentManager(ServerDeploymentManager):
         pvc_template = self.templates.get_template("pvc.j2")
         return yaml.safe_load(pvc_template.render(parameters))
 
+    def get_backend_policy(self, parameters: Dict[str, Any]) -> Dict:
+        tmpl = self.templates.get_template("backend-policy.j2")
+        return yaml.safe_load(tmpl.render(parameters))
+
+    def create_or_update_backend_policy(self, parameters: Dict[str, Any], annotations: Dict[str, str] = None) -> None:
+        """Apply a GCPBackendPolicy so the GKE gateway uses long backend
+        timeouts (default 3600s) + connection draining for long-running SPARQL
+        queries, instead of dropping the connection with a 504."""
+        body = self.get_backend_policy(parameters)
+        name = body["metadata"]["name"]
+        if annotations:
+            raw = body["metadata"].get("annotations", {})
+            raw.update(annotations)
+            body["metadata"]["annotations"] = raw
+
+        k8s_client = client.CustomObjectsApi()
+        group = "networking.gke.io"
+        version = "v1"
+        plural = "gcpbackendpolicies"
+        try:
+            k8s_client.get_namespaced_custom_object(
+                group=group, version=version, namespace=self.namespace, plural=plural, name=name
+            )
+            k8s_client.patch_namespaced_custom_object(
+                group=group, version=version, namespace=self.namespace, plural=plural, name=name, body=body
+            )
+        except ApiException as e:
+            if e.status == 404:
+                k8s_client.create_namespaced_custom_object(
+                    group=group, version=version, namespace=self.namespace, plural=plural, body=body
+                )
+            else:
+                raise e
+
     def create_or_update_pvc(self, parameters: Dict[str, Any], annotations: Dict[str, str] = None) -> None:
         pvc_body = self.get_pvc(parameters)
         k8s_client = client.CoreV1Api()
@@ -57,6 +91,7 @@ class QLeverServerDeploymentManager(ServerDeploymentManager):
         if app_config.networking_mode == "gateway":
             self.create_or_update_httproute(parameters=parameters, annotations=annotations)
             self.create_or_update_healthcheck(parameters=parameters, annotations=annotations)
+            self.create_or_update_backend_policy(parameters=parameters, annotations=annotations)
         else:
             self.create_or_update_ingress(parameters=parameters, annotations=annotations)
         self.create_or_update_service(parameters=parameters, annotations=annotations)

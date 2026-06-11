@@ -1,7 +1,7 @@
 from temporalio import activity
 from k8s.podman import JobMan
 from k8s import fuseki_server_manager, ldf_server_manager
-from lakefs_util.io_util import resolve_commit, download_file_from_latest_tag, download_files, upload_files, clean_up_files, resolve_future_tag, get_lakefs_prefix_size, download_hdt_files, get_latest_commit, get_latest_tag, download_file_at_ref
+from lakefs_util.io_util import resolve_commit, download_file_from_latest_tag, download_files, upload_files, clean_up_files, resolve_future_tag, get_lakefs_prefix_size, download_hdt_files, get_latest_commit, get_latest_tag, download_file_at_ref, object_exists, get_object_size
 from canary.slack import slack_canary
 from canary.mail import mail_canary
 from models.lakefs_models import LakefsMergeActionModel, LakefTagCreationModel
@@ -32,7 +32,8 @@ async def run_k8s_job(job_type: str, job_name: str, repo: str, branch: str,
                       additional_volume_mounts: list = None,
                       image: str = None, extra_pvcs: list = None,
                       read_only_default_mount: bool = False,
-                      pod_security_context: dict = None) -> str:
+                      pod_security_context: dict = None,
+                      configmap_overrides: dict = None) -> str:
     logger.info(f"Starting K8s job: {job_name} ({job_type})")
     # Inject GH_TOKEN from config if not explicitly provided.
     # This keeps secrets out of Temporal workflow history.
@@ -55,6 +56,7 @@ async def run_k8s_job(job_type: str, job_name: str, repo: str, branch: str,
         extra_pvcs=extra_pvcs,
         read_only_default_mount=read_only_default_mount,
         pod_security_context=pod_security_context,
+        configmap_overrides=configmap_overrides,
     )
     return job_name
 
@@ -63,7 +65,12 @@ async def watch_k8s_job_sync(job_name: str, poll_interval: int = 5) -> None:
     """Poll a K8s Job until terminal. Heartbeats Temporal every poll so the
     activity can outlive worker restarts (paired with `heartbeat_timeout` on
     the workflow side) and won't be killed by start_to_close_timeout when the
-    underlying Job legitimately runs for days."""
+    underlying Job legitimately runs for days.
+
+    The kubernetes client is sync; calls are offloaded with asyncio.to_thread
+    so the event loop stays responsive when multiple watchers run alongside
+    other activities (downloads, conversions) on the same worker.
+    """
     from kubernetes import client as k8s_client
     import asyncio as _asyncio
     logger.info(f"Watching K8s job: {job_name}")
@@ -71,7 +78,11 @@ async def watch_k8s_job_sync(job_name: str, poll_interval: int = 5) -> None:
     batch_v1 = k8s_client.BatchV1Api()
     while True:
         try:
-            job = batch_v1.read_namespaced_job(name=job_name, namespace=job_man.namespace)
+            job = await _asyncio.to_thread(
+                batch_v1.read_namespaced_job,
+                name=job_name,
+                namespace=job_man.namespace,
+            )
         except k8s_client.exceptions.ApiException as e:
             raise Exception(f"Failed to fetch Job '{job_name}': {e}, likely the job was never created.")
         succeeded     = job.status.succeeded or 0
@@ -86,7 +97,7 @@ async def watch_k8s_job_sync(job_name: str, poll_interval: int = 5) -> None:
             logger.info(f"Job '{job_name}' completed successfully.")
             return
         if failed > backoff_limit:
-            pod_info = job_man._get_pod_logs_for_job(job_name)
+            pod_info = await _asyncio.to_thread(job_man._get_pod_logs_for_job, job_name)
             raise Exception(f"Job '{job_name}' failed after {failed} attempts.\n{pod_info}")
         await _asyncio.sleep(poll_interval)
 
@@ -274,14 +285,39 @@ async def download_file_lakefs(repo: str, remote_path: str, local_path: str, ref
         await download_file_at_ref(repo, ref, remote_path, local_path)
     else:
         await download_file_from_latest_tag(repo, remote_path, local_path)
-    # Verify the file actually landed on disk. download_file silently returns
-    # None on 404 (logged as a warning); without this check we'd proceed to
-    # build with missing source files and only fail at IndexBuilderMain time.
-    if not os.path.exists(local_path) or os.path.getsize(local_path) == 0:
+    if not os.path.exists(local_path):
         raise Exception(
-            f"Download produced no file at {local_path} for {repo}@{ref or 'latest-tag'}:{remote_path}. "
-            "File missing in lakefs, ref does not contain the file, or transport returned empty."
+            f"Download produced no file at {local_path} for "
+            f"{repo}@{ref or 'latest-tag'}:{remote_path}."
         )
+    nominal = os.path.getsize(local_path)
+    if nominal == 0:
+        raise Exception(
+            f"Download produced empty file at {local_path} for "
+            f"{repo}@{ref or 'latest-tag'}:{remote_path}."
+        )
+    # Detect sparse / partial parallel downloads. ftruncate sets the nominal
+    # size up front; unwritten ranges show up as holes (st_blocks*512 < size).
+    # Comparing against the LakeFS-reported object size catches both sparse
+    # writes and short-stream truncations that getsize() alone misses.
+    if ref:
+        expected = await get_object_size(repo, ref, remote_path)
+        if expected is not None:
+            if nominal != expected:
+                raise Exception(
+                    f"Download size mismatch for {repo}@{ref}:{remote_path} -> {local_path}: "
+                    f"local nominal={nominal}, lakefs={expected}."
+                )
+            allocated_bytes = os.stat(local_path).st_blocks * 512
+            # Allow a small slack for filesystems that report blocks loosely
+            # (eg compression, alignment) — sparse-partial files are far below
+            # this threshold (~80% range on the failing geoconnex run).
+            if allocated_bytes < int(expected * 0.99):
+                raise Exception(
+                    f"Sparse / partial download for {repo}@{ref}:{remote_path} -> {local_path}: "
+                    f"only {allocated_bytes} of {expected} bytes written. "
+                    f"One or more byte-range parts did not complete."
+                )
 
 
 @activity.defn
@@ -379,16 +415,24 @@ S2_GRAPHS = [
     ("sudokn-geosparql.nt.gz",  "sudokn",     "https://purl.org/okn/frink/kg/sudokn#geosparql"),
 ]
 
+# Drops triples that declare a decimal value (e.g. "311119.0") as xsd:integer.
+# qlever's IndexBuilderMain refuses to parse these. The SUDOKN NAICS data has
+# them, and any KG that ingests SUDOKN nodes (e.g. secure-chain) inherits them.
+_DROP_DECIMAL_AS_INTEGER = r"""| grep -Ev '\.[0-9]+"\^\^<http://www\.w3\.org/2001/XMLSchema#integer>'"""
+
 # Per-shortname pipe suffix appended after `gunzip -c <file>` in the build command.
 # Required to match the reference qlever-index invocation.
 PER_REPO_INPUT_FILTERS = {
     "spatialkg":          '| grep -v "<http://stko-kwg.geog.ucsb.edu/lod/ontology/cellID>"',
-    "biobricks-aopwiki":  '| tail -n +28',
-    "biobricks-mesh":     '| tail -n +28',
+    # "biobricks-aopwiki":  '| tail -n +28',
+    # "biobricks-mesh":     '| tail -n +28',
+    "sudokn":             _DROP_DECIMAL_AS_INTEGER,
+    "securechainkg":      _DROP_DECIMAL_AS_INTEGER,
 }
 
-# Per-shortname overrides for where the source nt file lives in lakefs.
-# Default: remote_path="nt/graph.nt.gz", ref=latest tag.
+# Overrides for where the source nt file lives in lakefs. Keys may be either
+# a kg shortname OR a lakefs repo name — the resolver checks both. Default
+# behavior (no override): remote_path="nt/graph.nt.gz", ref=latest semver tag.
 # wikidata: file at repo root and we always pull from main (no semver tags).
 PER_REPO_LAKEFS_OVERRIDES = {
     "wikidata": {"remote_path": "graph.nt.gz", "ref": "main"},
@@ -416,10 +460,25 @@ async def prepare_qlever_job_specs(kg_refs: dict, s2_tag: str, only_kg: list = N
       - build_command: shell string for IndexBuilderMain (writes to /index/)
       - stxxl_memory:  string for --stxxl-memory (already part of build_command)
     """
+    import json as _json
+
     source_root  = app_config.qlever_source_path                  # /shared/qlever-source
     s2_local_dir = f"{source_root}/s2"
     index_dir    = "/index"                                       # mount of per-build output PVC
     stxxl_memory = app_config.qlever_indexer_stxxl_memory
+    settings_path = "/qlever/frink-qlever.settings.json"          # configmap mount in qlever-index-job.yaml
+
+    # The settings file is delivered via the job's configmap. We override its
+    # content (see configmap_overrides in the workflow) so num-triples-per-batch
+    # is config-driven. Too-small a batch on a multi-billion-triple build
+    # produces tens of thousands of partial vocabularies; merging that many
+    # exhausts fds/threads ("Resource temporarily unavailable"). Bigger
+    # batches → far fewer partial vocabs.
+    settings_json = _json.dumps({
+        "ascii-prefixes-only": False,
+        "num-triples-per-batch": app_config.qlever_num_triples_per_batch,
+        "parser-integer-overflow-behavior": "overflowing-integers-become-doubles",
+    })
 
     downloads = []
     for repo, meta in kg_refs.items():
@@ -441,8 +500,12 @@ async def prepare_qlever_job_specs(kg_refs: dict, s2_tag: str, only_kg: list = N
         })
 
     build_cmd_parts = [
-        f'ulimit -Sn 1048576; mkdir -p {index_dir} && cd {index_dir} && '
-        'IndexBuilderMain -i frink -s /qlever/frink-qlever.settings.json'
+        # Raise fd limit (-n) and process/thread limit (-u) before the build:
+        # the partial-vocab merge step opens many files and spawns many
+        # threads at once. `|| true` so a capped hard-limit doesn't abort.
+        f'ulimit -Sn 1048576 || true; ulimit -Su unlimited 2>/dev/null || true; '
+        f'mkdir -p {index_dir} && cd {index_dir} && '
+        f'IndexBuilderMain -i frink -s {settings_path}'
     ]
 
     for repo, meta in kg_refs.items():
@@ -468,6 +531,10 @@ async def prepare_qlever_job_specs(kg_refs: dict, s2_tag: str, only_kg: list = N
         "downloads": downloads,
         "build_command": ' '.join(build_cmd_parts),
         "stxxl_memory": stxxl_memory,
+        # Workflow feeds this to run_k8s_job as configmap_overrides so the
+        # qlever settings file (mounted from the job configmap) carries the
+        # config-driven num-triples-per-batch.
+        "configmap_overrides": {settings_path: settings_json},
     }
 
 @activity.defn
@@ -612,13 +679,18 @@ async def resolve_kg_ref(repo: str) -> dict:
 async def resolve_qlever_refs(only_kg: list = None) -> dict:
     """Resolve the ref+commit for every lakefs repo that feeds the federated
     qlever index. Each KG uses its latest semver tag (falling back to 'main'
-    if no tags), except wikidata which always tracks 'main'. The s2-builds
-    repo is always pinned to its latest semver tag.
+    if no tags), except wikidata which always tracks 'main' (override). The
+    s2-builds repo is always pinned to its latest semver tag.
+
+    For every KG, an `objects/stat` pre-flight is performed against the
+    chosen ref + remote_path. KGs whose source object is missing are dropped
+    from `kg_refs` and accumulated in `skipped` so the workflow can Slack-
+    report them without failing the build.
 
     Returns:
       {
-        "kg_refs":  {repo_id: {"shortname": str, "ref": str, "commit": str,
-                                "remote_path": str}},
+        "kg_refs":  {repo_id: {"shortname", "ref", "commit", "remote_path"}},
+        "skipped":  [{"repo", "shortname", "ref", "remote_path", "reason"}],
         "s2_repo":  str,
         "s2_tag":   str,
         "s2_commit": str,
@@ -626,9 +698,10 @@ async def resolve_qlever_refs(only_kg: list = None) -> dict:
     """
     kg_config = await KGConfig.from_git()
     skip_repos = {'semopenalex'}
-    overrides = PER_REPO_LAKEFS_OVERRIDES  # defined later in this module
+    overrides = PER_REPO_LAKEFS_OVERRIDES
 
     kg_refs: dict = {}
+    skipped: list = []
     for kg in kg_config.kgs:
         if not (kg.frink_options and kg.frink_options.lakefs_repo and kg.shortname):
             continue
@@ -637,19 +710,78 @@ async def resolve_qlever_refs(only_kg: list = None) -> dict:
         if only_kg and kg.shortname not in only_kg:
             continue
         repo = kg.frink_options.lakefs_repo
-        override = overrides.get(kg.shortname, {})
+        # Override lookup tries shortname first, then lakefs_repo. Lets the
+        # dict be keyed however a future contributor finds clearest.
+        override = overrides.get(kg.shortname) or overrides.get(repo) or {}
         if "ref" in override:
             ref = override["ref"]
         else:
             tag = await get_latest_tag(repo)
             ref = tag if tag else "main"
+        remote_path = override.get("remote_path", "nt/graph.nt.gz")
+
+        # Pre-flight: skip (don't fail) if the source file is missing.
+        try:
+            exists = await object_exists(repo, ref, remote_path)
+        except Exception as e:
+            exists = False
+            reason = f"stat failed: {e}"
+        else:
+            reason = "object not found"
+
+        if not exists:
+            logger.warning(f"Skipping {kg.shortname} ({repo}@{ref}:{remote_path}) — {reason}")
+            skipped.append({
+                "repo":        repo,
+                "shortname":   kg.shortname,
+                "ref":         ref,
+                "remote_path": remote_path,
+                "reason":      reason,
+            })
+            continue
+
         commit = await get_latest_commit(repo, ref)
         kg_refs[repo] = {
             "shortname":   kg.shortname,
             "ref":         ref,
             "commit":      commit,
-            "remote_path": override.get("remote_path", "nt/graph.nt.gz"),
+            "remote_path": remote_path,
         }
+
+    # Wikidata is not in okn-registry kgs.yaml with frink-options (entry has
+    # no `frink-options` block), so the loop above drops it. Inject it
+    # explicitly using the same path/ref defaults as PER_REPO_LAKEFS_OVERRIDES
+    # so the federated index always covers it.
+    wikidata_repo = "wikidata"
+    wikidata_shortname = "wikidata"
+    if not only_kg or wikidata_shortname in only_kg:
+        wd_override = PER_REPO_LAKEFS_OVERRIDES.get(wikidata_shortname) or {}
+        wd_ref = wd_override.get("ref", "main")
+        wd_remote_path = wd_override.get("remote_path", "graph.nt.gz")
+        try:
+            wd_exists = await object_exists(wikidata_repo, wd_ref, wd_remote_path)
+        except Exception as e:
+            wd_exists = False
+            wd_reason = f"stat failed: {e}"
+        else:
+            wd_reason = "object not found"
+        if wd_exists:
+            wd_commit = await get_latest_commit(wikidata_repo, wd_ref)
+            kg_refs[wikidata_repo] = {
+                "shortname":   wikidata_shortname,
+                "ref":         wd_ref,
+                "commit":      wd_commit,
+                "remote_path": wd_remote_path,
+            }
+        else:
+            logger.warning(f"Skipping {wikidata_shortname} ({wikidata_repo}@{wd_ref}:{wd_remote_path}) — {wd_reason}")
+            skipped.append({
+                "repo":        wikidata_repo,
+                "shortname":   wikidata_shortname,
+                "ref":         wd_ref,
+                "remote_path": wd_remote_path,
+                "reason":      wd_reason,
+            })
 
     s2_tag = await get_latest_tag(S2_LAKEFS_REPO)
     if not s2_tag:
@@ -657,6 +789,7 @@ async def resolve_qlever_refs(only_kg: list = None) -> dict:
     s2_commit = await get_latest_commit(S2_LAKEFS_REPO, s2_tag)
     return {
         "kg_refs":   kg_refs,
+        "skipped":   skipped,
         "s2_repo":   S2_LAKEFS_REPO,
         "s2_tag":    s2_tag,
         "s2_commit": s2_commit,
@@ -754,3 +887,112 @@ async def apply_ldf_config_and_rollout() -> str:
     # Force a rolling restart by re-patching annotation (idempotent)
     ldf_server_manager.rolling_restart(config_hash)
     return config_hash
+
+
+# ── QLever federation server (/federation) ────────────────────────────────
+@activity.defn
+async def resolve_qlever_federation_build_id(use_previous: bool = False, build_id: str = None) -> dict:
+    """Pick which index PVC to mount at /federation.
+
+    Precedence:
+      1. explicit `build_id` arg if non-empty
+      2. `build_id_previous` if `use_previous=True`
+      3. `build_id_serving`
+
+    Returns {"build_id", "pvc_name", "image", "source": "explicit|previous|serving"}.
+    Raises if the chosen build_id is empty or its PVC does not exist.
+    """
+    from k8s import qlever_state, qlever_pvc
+    from kubernetes import client
+    from kubernetes.client.rest import ApiException
+
+    state = qlever_state.read_state()
+    if build_id:
+        source = "explicit"
+        chosen = build_id
+    elif use_previous:
+        source = "previous"
+        chosen = state.get("build_id_previous")
+    else:
+        source = "serving"
+        chosen = state.get("build_id_serving")
+    if not chosen:
+        raise RuntimeError(
+            f"No build_id available for federation deploy (source={source}, state={state})."
+        )
+    pvc_name = qlever_pvc.pvc_name(chosen)
+    api = client.CoreV1Api()
+    try:
+        api.read_namespaced_persistent_volume_claim(name=pvc_name, namespace=app_config.k8s_namespace)
+    except ApiException as e:
+        if e.status == 404:
+            raise RuntimeError(f"Build PVC {pvc_name} not found for build_id={chosen}.")
+        raise
+    image = state.get("image") or app_config.qlever_image
+    return {
+        "build_id":          chosen,
+        "pvc_name":          pvc_name,
+        "image":             image,
+        "source":            source,
+        "federation_prefix": app_config.qlever_federation_prefix,
+    }
+
+
+@activity.defn
+async def deploy_qlever_federation(build_id: str, pvc_name: str, image: str) -> dict:
+    """Apply the federated qlever-server Deployment/Service/HTTPRoute/HealthCheck/BackendPolicy.
+
+    The Deployment uses `strategy: Recreate` so the old pod releases the prior
+    PVC before the new pod tries to mount it (RWO PVC = at-most-one-pod).
+    Service + HTTPRoute names are stable across rollovers, so external clients
+    never see the backendRef change.
+    """
+    from k8s import qlever_federation_server_manager
+
+    memory = app_config.qlever_federation_memory
+    cpu = app_config.qlever_federation_cpu
+
+    total_mib = _memory_str_to_mib(memory)
+    cache_mib = int(total_mib * app_config.qlever_federation_cache_pct)
+    entry_mib = max(cache_mib // 4, 1)
+    qlever_args = ["-m", f"{cache_mib}M", "-c", f"{cache_mib}M", "-e", f"{entry_mib}M"]
+    if app_config.qlever_federation_extra_args:
+        qlever_args.extend(app_config.qlever_federation_extra_args)
+
+    parameters = {
+        "build_id":           build_id,
+        "pvc_name":           pvc_name,
+        "qlever_image":       image,
+        "index_basename":     app_config.qlever_federation_index_basename,
+        "federation_prefix":  app_config.qlever_federation_prefix,
+        "host_name":          app_config.frink_address.replace("https://", "").replace("http://", "").rstrip("/"),
+        "cpu":                cpu,
+        "memory":             memory,
+        "qlever_args":        qlever_args,
+    }
+    annotations = {
+        "kace.frink/build-id":  build_id,
+        "kace.frink/index-pvc": pvc_name,
+    }
+    resources = {
+        "requests": {"cpu": cpu, "memory": memory},
+        "limits":   {"cpu": cpu, "memory": memory},
+    }
+
+    logger.info(f"Deploying federated qlever-server build_id={build_id} pvc={pvc_name}")
+    qlever_federation_server_manager.create_all(
+        parameters=parameters,
+        annotations=annotations,
+        resources=resources,
+    )
+
+    server_up = qlever_federation_server_manager.wait_for_services_to_be_running(
+        parameters=parameters,
+        annotations=annotations,
+        max_retries=12,
+        initial_delay=5.0,
+    )
+    if not server_up:
+        raise Exception(f"Federation qlever-server did not become healthy (build_id={build_id}).")
+
+    return {"build_id": build_id, "pvc": pvc_name, "deployment": "frink-federation-qlever-server"}

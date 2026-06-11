@@ -41,6 +41,8 @@ from .activities import (
     submit_ldf_sync_job,
     wait_ldf_sync_job,
     apply_ldf_config_and_rollout,
+    resolve_qlever_federation_build_id,
+    deploy_qlever_federation,
 )
 
 from .workflows import (
@@ -49,6 +51,7 @@ from .workflows import (
     DeploymentWorkflow,
     QLeverIndexWorkflow,
     QLeverDeploymentWorkflow,
+    QLeverFederationDeploymentWorkflow,
     FusekiDeploymentWorkflow,
     LDFSyncWorkflow,
 )
@@ -70,6 +73,7 @@ async def main():
             DeploymentWorkflow,
             QLeverIndexWorkflow,
             QLeverDeploymentWorkflow,
+            QLeverFederationDeploymentWorkflow,
             FusekiDeploymentWorkflow, # Added
             LDFSyncWorkflow,
         ],
@@ -111,6 +115,8 @@ async def main():
             submit_ldf_sync_job,
             wait_ldf_sync_job,
             apply_ldf_config_and_rollout,
+            resolve_qlever_federation_build_id,
+            deploy_qlever_federation,
         ],
     )
     

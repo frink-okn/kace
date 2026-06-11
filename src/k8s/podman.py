@@ -24,6 +24,89 @@ mapping = {
 
 config.load_incluster_config()
 # config.load_kube_config('/mnt/c/Users/kebedey/kubeconfig/kubeconfig-sterling-kebedey-kebedey')
+
+
+_TOKEN_FILE = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+
+
+def _log_token_diag():
+    """One-line diagnostic for the SA token file. Helps distinguish
+    'no token' vs 'malformed token' vs 'rotated token' when k8s answers
+    `system:anonymous` to an API call."""
+    try:
+        st = os.stat(_TOKEN_FILE)
+        with open(_TOKEN_FILE) as fh:
+            tok = fh.read().strip()
+        looks_jwt = tok.count(".") == 2 and len(tok) > 50
+        logger.info(
+            f"SA token diag: size={st.st_size}B mtime={st.st_mtime} "
+            f"jwt_shape={looks_jwt} head={tok[:20]!r}"
+        )
+    except Exception as e:
+        logger.error(f"SA token diag failed: {e}")
+
+
+def _fresh_api_client():
+    """Build a brand-new ApiClient with a Configuration loaded from disk.
+
+    Two things we need to handle:
+
+    1. GKE / k8s >= 1.24 rotate the projected SA token ~hourly. Older code
+       called `load_incluster_config()` once at module import, so the cached
+       token went stale and the client started hitting `system:anonymous`.
+       Fix: build a fresh Configuration per call.
+
+    2. Empirically, some versions of the kubernetes Python client (we pin
+       nothing in requirements.txt) fail to attach the Bearer header from
+       `Configuration.api_key` even though `load_incluster_config()` wrote
+       the right value. Observable symptom: a curl with the same token
+       authenticates correctly, but `client.CoreV1Api()` calls return
+       `system:anonymous`. Fix: after the loader runs, ALSO read the token
+       file ourselves and overwrite both `api_key` and the per-host default
+       headers with an explicit `Authorization: bearer ...`. This bypasses
+       any internal refresh-hook bookkeeping the client may have gotten
+       wrong.
+    """
+    cfg = client.Configuration()
+    try:
+        config.load_incluster_config(client_configuration=cfg)
+    except Exception as e:
+        logger.error(f"load_incluster_config failed: {e}")
+        _log_token_diag()
+        raise
+
+    # Manual bearer-header override — see (2) above.
+    try:
+        with open(_TOKEN_FILE) as fh:
+            token = fh.read().strip()
+        if token:
+            cfg.api_key = {"authorization": f"bearer {token}"}
+            cfg.api_key_prefix = {}
+            api_client = client.ApiClient(configuration=cfg)
+            api_client.set_default_header("Authorization", f"Bearer {token}")
+            return api_client
+        else:
+            logger.warning("SA token file is empty; falling back to client default auth.")
+    except Exception as e:
+        logger.warning(f"Manual token attach failed, falling back to client default: {e}")
+
+    return client.ApiClient(configuration=cfg)
+
+
+def _core_v1():
+    return client.CoreV1Api(api_client=_fresh_api_client())
+
+
+def _batch_v1():
+    return client.BatchV1Api(api_client=_fresh_api_client())
+
+
+# Kept for source-compat with prior fix; now a no-op since callers use
+# the _core_v1 / _batch_v1 helpers above.
+def _reload_k8s_auth():
+    pass
+
+
 class JobMan:
     def __init__(self):
         self.job_configs = {}
@@ -42,7 +125,8 @@ class JobMan:
         return job_objects
 
     def ensure_configmap(self, name, data: Dict[str, str]):
-        core_v1 = client.CoreV1Api()
+        _reload_k8s_auth()
+        core_v1 = _core_v1()
         configmap_name = f"{name}-config"
         metadata = client.V1ObjectMeta(
             name=configmap_name,
@@ -125,7 +209,8 @@ class JobMan:
                 resources=None, env_vars=None, additional_volume_mounts=None,
                 image: str = None, extra_pvcs: List[Dict] = None,
                 read_only_default_mount: bool = False,
-                pod_security_context: Dict = None):
+                pod_security_context: Dict = None,
+                configmap_overrides: Dict[str, str] = None):
         """
         Args:
             extra_pvcs: list of dicts with keys
@@ -139,7 +224,14 @@ class JobMan:
             read_only_default_mount: when True, mount the default `data`
                 volume at /mnt/repo as read-only. Used by the federated
                 qlever-index job (it must not write to source files).
+            configmap_overrides: {configmap_path: content} — replace the
+                content of a configmap file declared in the job template
+                (matched by its full path key, e.g.
+                "/qlever/frink-qlever.settings.json"). Lets callers supply
+                config-driven file contents without baking them into the
+                static template.
         """
+        _reload_k8s_auth()
         if env_vars is None:
             env_vars = dict()
         job: kubernetes.client.V1Job = self.job_objects[job_type]
@@ -185,6 +277,8 @@ class JobMan:
             cm_data = {}
             for path, content in job_config["configmap"].items():
                 filename = os.path.basename(path)
+                if configmap_overrides and path in configmap_overrides:
+                    content = configmap_overrides[path]
                 cm_data[filename] = content
             self.ensure_configmap(job_type, cm_data)
             
@@ -231,7 +325,7 @@ class JobMan:
         if pod_security_context:
             pod_template.security_context = client.V1PodSecurityContext(**pod_security_context)
 
-        api = client.BatchV1Api()
+        api = _batch_v1()
         logger.info(f"removing previous jobs {job_name} ")
         self.remove_job(job_name)
         return api.create_namespaced_job(namespace=self.namespace, body=job)
@@ -241,7 +335,8 @@ class JobMan:
 
         Returns a formatted string with pod status, exit codes, and tail logs.
         """
-        core_v1 = client.CoreV1Api()
+        _reload_k8s_auth()
+        core_v1 = _core_v1()
         output_parts = []
         try:
             pods = core_v1.list_namespaced_pod(
@@ -298,9 +393,9 @@ class JobMan:
         Raises:
             Exception: If the Job fails. Includes pod logs and exit codes.
         """
-        batch_v1 = client.BatchV1Api()
-
         while True:
+            _reload_k8s_auth()
+            batch_v1 = _batch_v1()
             try:
                 job = batch_v1.read_namespaced_job(name=job_name, namespace=self.namespace)
             except client.exceptions.ApiException as e:
@@ -339,9 +434,9 @@ class JobMan:
         Raises:
             Exception: If the Job fails. Includes pod logs and exit codes.
         """
-        batch_v1 = client.BatchV1Api()
-
         while True:
+            _reload_k8s_auth()
+            batch_v1 = _batch_v1()
             try:
                 job = batch_v1.read_namespaced_job(name=job_name, namespace=self.namespace)
             except client.exceptions.ApiException as e:
@@ -372,7 +467,8 @@ class JobMan:
         exists = True
         while exists:
             try:
-                api = client.BatchV1Api()
+                _reload_k8s_auth()
+                api = _batch_v1()
                 logger.info("looking up job {0}".format(name))
                 job = api.read_namespaced_job(namespace=self.namespace, name=name)
                 logger.info(f"job found... checking if being deleted")
@@ -400,7 +496,8 @@ class JobMan:
         exists = True
         while exists:
             try:
-                v1 = client.CoreV1Api()
+                _reload_k8s_auth()
+                v1 = _core_v1()
 
                 pod = v1.read_namespaced_pod(name=pod_name, namespace=self.namespace)
                 # Check if deletionTimestamp is set
@@ -421,7 +518,8 @@ class JobMan:
                     print(f"An error occurred: {e}")
 
     def remove_pods(self, job_name):
-        result = client.CoreV1Api().list_namespaced_pod(namespace=self.namespace,
+        _reload_k8s_auth()
+        result = _core_v1().list_namespaced_pod(namespace=self.namespace,
                                                         label_selector=f"job-name={job_name}")
 
         for pod in result.items:

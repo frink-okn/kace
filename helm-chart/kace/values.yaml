@@ -30,6 +30,7 @@ podAnnotations: {}
 
 podSecurityContext:
    fsGroup: 0
+   fsGroupChangePolicy: OnRootMismatch
 
 securityContext: {}
   # capabilities:
@@ -134,6 +135,8 @@ temporal_pg:
       cpu: 100m
       memory: 128Mi
 
+command:
+  entry: "server:app"
 app_config:
   lakefs_url: "http://lakefs"
   lakefs_access_key: ""
@@ -152,7 +155,38 @@ app_config:
   temporal_host: ""             # auto-detected if empty
   temporal_namespace: "default"
   # Networking mode: "gateway" (HTTPRoute + HealthCheckPolicy) or "ingress" (Kubernetes Ingress)
-  networking_mode: "gateway"
+#  networking_mode: "gateway"
+  # Comma-separated lakefs repo names that bypass KG registry lookup (synthetic KG used).
+  conversion_skip_repos: "wikidata"
+  # LDF aggregator (single multi-KG LDF deployment)
+  ldf_pvc_name: "frink-ldf-data"
+  ldf_pvc_size: "1Ti"
+  ldf_pvc_storage_class: "shared-ssd-sc"
+  ldf_replicas: "1"
+  ldf_image: "containers.renci.org/frink/ldf-server:2023-09-13"
+  ldf_extra_datasources: '[{"title":"Wikidata","data_source_path":"wikidata","hdt_file_name":"wikidata-all.hdt"},{"title":"Ubergraph","data_source_path":"ubergraph","hdt_file_name":"ubergraph.hdt"}]'
+  ldf_sync_image: ""
+  ldf_host_name: "frink.apps.renci.org"
+  # QLever federated index build (QLeverIndexWorkflow)
+  qlever_image: "adfreiburg/qlever:commit-99b6db5"
+  qlever_indexer_cpu: "8"
+  qlever_indexer_memory: "100Gi"
+  qlever_indexer_stxxl_memory: "40G"
+  qlever_index_pvc_size: "3Ti"
+  qlever_index_pvc_storage_class: "premium-rwo"
+  qlever_source_path: "/shared/qlever-source"
+  qlever_state_configmap: "kace-qlever-state"
+  qlever_index_pvc_prefix: "kace-qlever-index-"
+  qlever_index_previous_ttl_hours: "24"
+  qlever_download_concurrency: "4"
+  qlever_num_triples_per_batch: "5000000"
+  # QLever federation server (/federation)
+  qlever_federation_cpu: "8"
+  qlever_federation_memory: "84Gi"
+  qlever_federation_cache_pct: "0.30"
+  qlever_federation_index_basename: "frink"
+  qlever_federation_prefix: "federation"
+  qlever_federation_extra_args: ""
 
 # Temporal server subchart
 temporal:
@@ -172,8 +206,8 @@ temporal:
               connectProtocol: "tcp"
               user: temporal
               password: temporal
-              maxConns: 20
-              maxIdleConns: 20
+              maxConns: 4
+              maxIdleConns: 4
           visibility:
             sql:
               pluginName: postgres12_pgx
@@ -182,8 +216,8 @@ temporal:
               connectProtocol: "tcp"
               user: temporal
               password: temporal
-              maxConns: 20
-              maxIdleConns: 20
+              maxConns: 4
+              maxIdleConns: 4
       namespaces:
         create: true
         namespace:

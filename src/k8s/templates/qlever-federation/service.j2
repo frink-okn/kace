@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app: frink-federation-qlever-server
+  name: frink-federation-qlever-server
+spec:
+  ports:
+  - name: tcp
+    port: 7001
+    protocol: TCP
+    targetPort: 7001
+  selector:
+    app: frink-federation-qlever-server
+  type: ClusterIP

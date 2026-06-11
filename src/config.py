@@ -56,6 +56,13 @@ class Config(BaseModel):
     qlever_index_pvc_prefix: str
     qlever_index_previous_ttl_hours: int
     qlever_download_concurrency: int
+    qlever_num_triples_per_batch: int
+    qlever_federation_cpu: str
+    qlever_federation_memory: str
+    qlever_federation_cache_pct: float
+    qlever_federation_index_basename: str
+    qlever_federation_prefix: str
+    qlever_federation_extra_args: list[str]
 
 
 
@@ -110,4 +117,11 @@ config = Config(
     qlever_index_pvc_prefix=os.environ.get('QLEVER_INDEX_PVC_PREFIX', 'kace-qlever-index-'),
     qlever_index_previous_ttl_hours=int(os.environ.get('QLEVER_INDEX_PREVIOUS_TTL_HOURS', '24')),
     qlever_download_concurrency=int(os.environ.get('QLEVER_DOWNLOAD_CONCURRENCY', '4')),
+    qlever_num_triples_per_batch=int(os.environ.get('QLEVER_NUM_TRIPLES_PER_BATCH', '5000000')),
+    qlever_federation_cpu=os.environ.get('QLEVER_FEDERATION_CPU', '8'),
+    qlever_federation_memory=os.environ.get('QLEVER_FEDERATION_MEMORY', '200Gi'),
+    qlever_federation_cache_pct=float(os.environ.get('QLEVER_FEDERATION_CACHE_PCT', '0.70')),
+    qlever_federation_index_basename=os.environ.get('QLEVER_FEDERATION_INDEX_BASENAME', 'frink'),
+    qlever_federation_prefix=os.environ.get('QLEVER_FEDERATION_PREFIX', 'federation'),
+    qlever_federation_extra_args=[a.strip() for a in os.environ.get('QLEVER_FEDERATION_EXTRA_ARGS', '').split(',') if a.strip()],
 )

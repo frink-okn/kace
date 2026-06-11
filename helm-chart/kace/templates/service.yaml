@@ -13,3 +13,4 @@ spec:
       name: http
   selector:
     {{- include "kace.selectorLabels" . | nindent 4 }}
+    app: kace-web-hook

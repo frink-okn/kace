@@ -26,6 +26,10 @@ LONG_RUNNING_JOB_TIMEOUT = timedelta(hours=42)
 from temporalio.common import RetryPolicy
 NO_RETRY = RetryPolicy(maximum_attempts=1)
 
+# Skip output directories from previous runs to avoid re-merging them
+OUTPUT_PREFIXES = ['qlever/', 'hdt/', 'nt/', 'void/']
+
+
 @workflow.defn
 class HDTConversionWorkflow:
     @workflow.run
@@ -36,219 +40,193 @@ class HDTConversionWorkflow:
                   exclude_files: list = None, exclude_known_extension: list = None,
                   files_list: list = None) -> None:
 
+        # Stash run params & derived values shared across the phase helpers.
+        self.action_payload = action_payload
+        self.cpu = cpu
+        self.memory = memory
+        self.ephemeral = ephemeral
+        self.java_opts = java_opts
+        self.mem_size = mem_size
+        self.convert_to_hdt = convert_to_hdt
+        self.hdt_path = hdt_path
 
+        self.repo_id = action_payload['repository_id']
+        self.branch_id = action_payload['branch_id']
+        self.job_name = f"{action_payload['hook_id']}-{self.repo_id[:10]}-{self.branch_id.replace('_','-')[:10]}-{action_payload['commit_id'][:10]}"
+        self.working_dir = f"/mnt/repo/{self.repo_id}/{self.branch_id}"
+        self.local_dir = f"/{app_config.local_data_dir.lstrip('/').rstrip('/')}/{self.repo_id}/{self.branch_id}"
 
-        # 1. Get KG config
+        # Fetch KG config, then derive the shared state every phase reads.
         kg_config = await workflow.execute_activity(
             get_kg_config_from_git,
-            action_payload['repository_id'],
+            self.repo_id,
             start_to_close_timeout=timedelta(minutes=5),
-            retry_policy=NO_RETRY
+            retry_policy=NO_RETRY,
         )
-        kg_config: KG = KG(**kg_config)
-        kg_title = kg_config.shortname
-        workflow.logger.info(f"Starting HDTConversionWorkflow for {kg_title}")
+        self.kg_config: KG = KG(**kg_config)
+        self.kg_title = self.kg_config.shortname
+        workflow.logger.info(f"Starting HDTConversionWorkflow for {self.kg_title}")
 
+        # Resources + env reused by every K8s job in this run.
+        self.resources = {
+            "requests": {"cpu": str(cpu), "memory": memory, "ephemeral-storage": ephemeral},
+            "limits": {"cpu": str(cpu), "memory": memory, "ephemeral-storage": ephemeral},
+        }
+        self.env_base = {
+            "GH_HANDLES": ",".join(self.kg_config.github_handles),
+            "WORKING_DIR": self.working_dir,
+            "REPO_NAME": self.repo_id,
+            "COMMIT_ID": action_payload['source_ref'],
+            "KG_NAME": self.kg_title,
+        }
+        self.dataset_uri = f"https://purl.org/okn/frink/kg/{self.kg_title}"
 
-        repo_id = action_payload['repository_id']
-        branch_id = action_payload['branch_id']
-        job_name = f"{action_payload['hook_id']}-{repo_id[:10]}-{branch_id.replace('_','-')[:10]}-{action_payload['commit_id'][:10]}"
-        working_dir = f"/mnt/repo/{repo_id}/{branch_id}"
-        local_dir = f"/{app_config.local_data_dir.lstrip('/').rstrip('/')}/{repo_id}/{branch_id}"
+        # 2. Download input files (skipped if files_list already provided)
+        file_list = await self._download_inputs(files_list, exclude_files, exclude_known_extension)
 
-        # 2. Download input files from LakeFS (skip if files_list already provided)
-        # Skip output directories from previous runs to avoid re-merging them
-        OUTPUT_PREFIXES = ['qlever/', 'hdt/', 'nt/', 'void/']
+        # 3. Run HDT and NT conversion jobs
+        await self._run_hdt_convert(file_list)
+        await self._run_nt_merge()
+        await self._run_riot_validate()
 
+        # 4. VOID job and build-version TTL
+        await self._run_void()
+        await self._write_build_version()
+
+        # 5. QLever index job
+        await self._run_qlever_index()
+
+        # 6. Documentation job
+        # await self._run_documentation(doc_path)
+
+        # 7. Upload
+        upload_result, upload_void, void_repo = await self._upload_outputs()
+
+        # 8. Notify
+        await self._notify_and_email(upload_result, upload_void, void_repo)
+
+        # 9. Cleanup local files
+        await self._cleanup()
+
+    async def _run_job_and_wait(self, *, job_type, job_name, command, args,
+                                env_vars, watch_timeout, resources=None) -> None:
+        """
+        Submit a K8s Job and block until it reaches a terminal state.
+
+        `run_k8s_job` returns as soon as the Job is submitted; `watch_k8s_job_sync`
+        heartbeats while polling so the (potentially multi-hour) Job survives worker
+        restarts.
+        """
+        await workflow.execute_activity(
+            run_k8s_job,
+            args=[job_type, job_name, self.repo_id, self.branch_id,
+                  command, args, resources or self.resources, env_vars],
+            start_to_close_timeout=timedelta(minutes=10),
+            retry_policy=NO_RETRY,
+        )
+        await workflow.execute_activity(
+            watch_k8s_job_sync,
+            args=[job_name],
+            start_to_close_timeout=watch_timeout,
+            retry_policy=NO_RETRY,
+        )
+
+    async def _download_inputs(self, files_list, exclude_files, exclude_known_extension) -> list[str]:
         if files_list:
-            file_list = [x.replace('/local/', '/mnt/repo/') for x in files_list ]
             workflow.logger.info(f"Using provided files_list ({len(files_list)} files) — skipping download")
-        elif convert_to_hdt:
+            return [x.replace('/local/', '/mnt/repo/') for x in files_list]
+
+        if self.convert_to_hdt:
             files_list = await workflow.execute_activity(
                 download_input_files,
-                args=[repo_id, branch_id, None, exclude_files, exclude_known_extension, True, OUTPUT_PREFIXES],
+                args=[self.repo_id, self.branch_id, None, exclude_files, exclude_known_extension, True, OUTPUT_PREFIXES],
                 start_to_close_timeout=timedelta(hours=24),
-                retry_policy=NO_RETRY
+                retry_policy=NO_RETRY,
             )
-            file_list = [working_dir + '/' + x for x in files_list ]
         else:
             files_list = await workflow.execute_activity(
                 download_input_files,
-                args=[repo_id, branch_id, ['hdt'], exclude_files, exclude_known_extension, True, OUTPUT_PREFIXES],
+                args=[self.repo_id, self.branch_id, ['hdt'], exclude_files, exclude_known_extension, True, OUTPUT_PREFIXES],
                 start_to_close_timeout=timedelta(hours=24),
                 heartbeat_timeout=timedelta(minutes=15),
-                retry_policy=NO_RETRY
+                retry_policy=NO_RETRY,
             )
-            file_list = [working_dir + '/' + x for x in files_list ]
+        return [self.working_dir + '/' + x for x in files_list]
 
-        # 3. Run HDT and NT conversion jobs
-
-        # 3.1 HDT conversion job
+    async def _run_hdt_convert(self, file_list) -> None:
         hdt_convert_args = ['create'] + file_list + [
             '--temp-dir',
-            working_dir + '/hdt-tmp/',
+            self.working_dir + '/hdt-tmp/',
             '--index',
             '--memory-limit',
-            mem_size,
+            self.mem_size,
             '-v',
             '--output',
-            working_dir + '/hdt/graph.hdt'
+            self.working_dir + '/hdt/graph.hdt',
         ]
 
         await workflow.execute_activity(
             create_local_dir,
-            args=[local_dir + '/hdt'],
+            args=[self.local_dir + '/hdt'],
             start_to_close_timeout=timedelta(minutes=1),
-            retry_policy=NO_RETRY
+            retry_policy=NO_RETRY,
         )
-
         await workflow.execute_activity(
             create_local_dir,
-            args=[local_dir + '/nt'],
+            args=[self.local_dir + '/nt'],
             start_to_close_timeout=timedelta(minutes=1),
-            retry_policy=NO_RETRY
+            retry_policy=NO_RETRY,
         )
 
-        await workflow.execute_activity(
-            run_k8s_job,
-            args=[
-                "hdtc-job",
-                job_name,
-                repo_id,
-                branch_id,
-                None, # command override
-                hdt_convert_args, # command args
-                { # resources
-                    "requests": {"cpu": str(cpu), "memory": memory, "ephemeral-storage": ephemeral},
-                    "limits": {"cpu": str(cpu), "memory": memory, "ephemeral-storage": ephemeral}
-                },
-                {
-                    "GH_HANDLES": ",".join(kg_config.github_handles),
-                    "JAVA_OPTIONS": java_opts,
-                    "MEM_SIZE": mem_size,
-                    "WORKING_DIR": working_dir,
-                    "REPO_NAME": repo_id,
-                    "COMMIT_ID": action_payload['source_ref'],
-                    "KG_NAME": kg_title,
-                }
-            ],
-            start_to_close_timeout=timedelta(minutes=10),
-            retry_policy=NO_RETRY
-        )
-        # run hdt conversion.
-        await workflow.execute_activity(
-            watch_k8s_job_sync,
-            args=[job_name],
-            start_to_close_timeout=LONG_RUNNING_JOB_TIMEOUT,
-            retry_policy=NO_RETRY
+        await self._run_job_and_wait(
+            job_type="hdtc-job",
+            job_name=self.job_name,
+            command=None,
+            args=hdt_convert_args,
+            env_vars={**self.env_base, "JAVA_OPTIONS": self.java_opts, "MEM_SIZE": self.mem_size},
+            watch_timeout=LONG_RUNNING_JOB_TIMEOUT,
         )
 
-        # 3.2 NT Merge Job (Takes the HDT as input)
-        nt_job_name = f"{job_name}-nt"
-        nt_convert_args = ["-c", f"hdtc dump {working_dir}/hdt/graph.hdt | gzip > {working_dir}/nt/graph.nt.gz"]
-
-        await workflow.execute_activity(
-            run_k8s_job,
-            args=[
-                "hdtc-job",
-                nt_job_name,
-                repo_id,
-                branch_id,
-                ["/bin/sh"], # command override
-                nt_convert_args, # command args
-                { # resources
-                    "requests": {"cpu": str(cpu), "memory": memory, "ephemeral-storage": ephemeral},
-                    "limits": {"cpu": str(cpu), "memory": memory, "ephemeral-storage": ephemeral}
-                },
-                {
-                    "GH_HANDLES": ",".join(kg_config.github_handles),
-                    "JAVA_OPTIONS": java_opts,
-                    "WORKING_DIR": working_dir,
-                    "REPO_NAME": repo_id,
-                    "COMMIT_ID": action_payload['source_ref'],
-                    "KG_NAME": kg_title,
-                }
-            ],
-            start_to_close_timeout=timedelta(minutes=10),
-            retry_policy=NO_RETRY
-        )
-        await workflow.execute_activity(
-            watch_k8s_job_sync,
-            args=[nt_job_name],
-            start_to_close_timeout=LONG_RUNNING_JOB_TIMEOUT,
-            retry_policy=NO_RETRY
+    async def _run_nt_merge(self) -> None:
+        nt_job_name = f"{self.job_name}-nt"
+        nt_convert_args = ["-c", f"hdtc dump {self.working_dir}/hdt/graph.hdt | gzip > {self.working_dir}/nt/graph.nt.gz"]
+        await self._run_job_and_wait(
+            job_type="hdtc-job",
+            job_name=nt_job_name,
+            command=["/bin/sh"],
+            args=nt_convert_args,
+            env_vars={**self.env_base, "JAVA_OPTIONS": self.java_opts},
+            watch_timeout=LONG_RUNNING_JOB_TIMEOUT,
         )
 
-        # 3.3 RIOT Validation Job
-        riot_job_name = f"{job_name}-riot-validate"
-        await workflow.execute_activity(
-            run_k8s_job,
-            args=[
-                "nt-merge-job",
-                riot_job_name,
-                repo_id,
-                branch_id,
-                ["/bin/validate-nt.sh"],  # command override
-                None,  # no extra args — script reads env vars
-                {
-                    "requests": {"cpu": str(cpu), "memory": memory, "ephemeral-storage": ephemeral},
-                    "limits": {"cpu": str(cpu), "memory": memory, "ephemeral-storage": ephemeral}
-                },
-                {
-                    "GH_HANDLES": ",".join(kg_config.github_handles),
-                    "WORKING_DIR": working_dir,
-                    "REPO_NAME": repo_id,
-                    "COMMIT_ID": action_payload['source_ref'],
-                    "KG_NAME": kg_title,
-                }
-            ],
-            start_to_close_timeout=timedelta(minutes=10),
-            retry_policy=NO_RETRY
-        )
-        await workflow.execute_activity(
-            watch_k8s_job_sync,
-            args=[riot_job_name],
-            start_to_close_timeout=LONG_RUNNING_JOB_TIMEOUT,
-            retry_policy=NO_RETRY
+    async def _run_riot_validate(self) -> None:
+        riot_job_name = f"{self.job_name}-riot-validate"
+        await self._run_job_and_wait(
+            job_type="nt-merge-job",
+            job_name=riot_job_name,
+            command=["/bin/validate-nt.sh"],
+            args=None,
+            env_vars=dict(self.env_base),
+            watch_timeout=LONG_RUNNING_JOB_TIMEOUT,
         )
 
-        # Determine HDT path
-        real_hdt_path = f"{working_dir}/hdt" if convert_to_hdt else f"{working_dir}/{hdt_path}"
-
-        # 4. VOID Job
-        void_job_name = f"{job_name}-void"
+    async def _run_void(self) -> None:
+        real_hdt_path = f"{self.working_dir}/hdt" if self.convert_to_hdt else f"{self.working_dir}/{self.hdt_path}"
+        void_job_name = f"{self.job_name}-void"
         void_input = f"{real_hdt_path}/graph.hdt"
         void_output = f"{real_hdt_path}/void.nt"
-        dataset_uri = f"https://purl.org/okn/frink/kg/{kg_title}"
-
-        await workflow.execute_activity(
-            run_k8s_job,
-            args=[
-                "hdtc-job",
-                void_job_name,
-                repo_id,
-                branch_id,
-                None,
-                ["void", void_input, "--dataset-uri", dataset_uri, "-o", void_output],
-                {
-                    "requests": {"cpu": str(cpu), "memory": memory, "ephemeral-storage": ephemeral},
-                    "limits": {"cpu": str(cpu), "memory": memory, "ephemeral-storage": ephemeral}
-                },
-                None
-            ],
-            start_to_close_timeout=timedelta(minutes=10),
-            retry_policy=NO_RETRY
-        )
-        await workflow.execute_activity(
-            watch_k8s_job_sync,
-            args=[void_job_name],
-            start_to_close_timeout=timedelta(hours=6),
-            retry_policy=NO_RETRY
+        await self._run_job_and_wait(
+            job_type="hdtc-job",
+            job_name=void_job_name,
+            command=None,
+            args=["void", void_input, "--dataset-uri", self.dataset_uri, "-o", void_output],
+            env_vars=None,
+            watch_timeout=timedelta(hours=6),
         )
 
-        # 4.5 Generate build version TTL
-        if action_payload.get('commit_id'):
-            version = action_payload['commit_id'][:7]
+    async def _write_build_version(self) -> None:
+        if self.action_payload.get('commit_id'):
+            version = self.action_payload['commit_id'][:7]
         else:
             version = "NA"
 
@@ -256,107 +234,82 @@ class HDTConversionWorkflow:
         timestamp_str = now_dt.isoformat()
         month_year_str = now_dt.strftime("%b %Y")  # e.g., "Nov 2025"
 
-        pav_ttl_path = f"{local_dir}/hdt/void.nt"
-
+        pav_ttl_path = f"{self.local_dir}/hdt/void.nt"
 
         version_tag = await workflow.execute_activity(
             get_future_tag,
-            args=[repo_id],
+            args=[self.repo_id],
             start_to_close_timeout=timedelta(minutes=2),
-            retry_policy=NO_RETRY
+            retry_policy=NO_RETRY,
         )
         nt_content = (
-            f"<{dataset_uri}> <http://purl.org/pav/version> \"{version_tag}\" .\n"            
-            f"<{dataset_uri}> <http://purl.org/pav/lastUpdatedOn> \"{timestamp_str}\"^^<http://www.w3.org/2001/XMLSchema#dateTime> .\n"
-            f"<{dataset_uri}> <http://purl.org/dc/terms/modified> \"{month_year_str}\" .\n"
+            f"<{self.dataset_uri}> <http://purl.org/pav/version> \"{version_tag}\" .\n"
+            f"<{self.dataset_uri}> <http://purl.org/pav/lastUpdatedOn> \"{timestamp_str}\"^^<http://www.w3.org/2001/XMLSchema#dateTime> .\n"
+            f"<{self.dataset_uri}> <http://purl.org/dc/terms/modified> \"{month_year_str}\" .\n"
         )
 
         await workflow.execute_activity(
             create_local_file,
-            # file path , content, append
+            # file path, content, append
             args=[pav_ttl_path, nt_content, True],
             start_to_close_timeout=timedelta(minutes=1),
-            retry_policy=NO_RETRY
+            retry_policy=NO_RETRY,
         )
 
-        unzip_stream = f"-f <(gunzip -c {working_dir}/nt/graph.nt.gz) "
-        if repo_id == "secure-chain-kg":
-            unzip_stream = f"-f <(gunzip -c {working_dir}/nt/graph.nt.gz | grep -v hasNAICSCodeValue) "
-        if repo_id == "spatial-kg":
-            unzip_stream = f"-f <(gunzip -c {working_dir}/nt/graph.nt.gz | grep -v '<http://stko-kwg.geog.ucsb.edu/lod/ontology/cellID>') "
+    async def _run_qlever_index(self) -> None:
+        unzip_stream = f"-f <(gunzip -c {self.working_dir}/nt/graph.nt.gz) "
+        if self.repo_id == "secure-chain-kg":
+            unzip_stream = f"-f <(gunzip -c {self.working_dir}/nt/graph.nt.gz | grep -v hasNAICSCodeValue) "
+        if self.repo_id == "spatial-kg":
+            unzip_stream = f"-f <(gunzip -c {self.working_dir}/nt/graph.nt.gz | grep -v '<http://stko-kwg.geog.ucsb.edu/lod/ontology/cellID>') "
 
-        # 5 QLever Index Job
-        qlever_job_name = f"{job_name}-qlever"
+        qlever_job_name = f"{self.job_name}-qlever"
         qlever_cmd = (
             f"ulimit -Sn 1048576; "
-            f"mkdir -p {working_dir}/qlever; "
-            f"cd {working_dir}/qlever; "
-            f"IndexBuilderMain -i {kg_title} -s /qlever/frink-qlever.settings.json "
+            f"mkdir -p {self.working_dir}/qlever; "
+            f"cd {self.working_dir}/qlever; "
+            f"IndexBuilderMain -i {self.kg_title} -s /qlever/frink-qlever.settings.json "
             f"{unzip_stream}"
-            f"-g {dataset_uri} -F nt "
-            f"-f {working_dir}/hdt/void.nt "
-            f"-g {dataset_uri}#void -F nt  --stxxl-memory {mem_size} "
+            f"-g {self.dataset_uri} -F nt "
+            f"-f {self.working_dir}/hdt/void.nt "
+            f"-g {self.dataset_uri}#void -F nt  --stxxl-memory {self.mem_size} "
         )
 
         await workflow.execute_activity(
             create_local_dir,
-            args=[local_dir + '/qlever', True],
+            args=[self.local_dir + '/qlever', True],
             start_to_close_timeout=timedelta(minutes=1),
-            retry_policy=NO_RETRY
+            retry_policy=NO_RETRY,
         )
 
-        await workflow.execute_activity(
-            run_k8s_job,
-            args=[
-                "qlever-index-job",
-                qlever_job_name,
-                repo_id,
-                branch_id,
-                ["bash"],  # command override
-                ["-c", qlever_cmd],  # command args
-                {  # resources
-                    "requests": {"cpu": str(cpu), "memory": memory, "ephemeral-storage": ephemeral},
-                    "limits": {"cpu": str(cpu), "memory": memory, "ephemeral-storage": ephemeral}
-                },
-                {
-                    "STXXL_MEMORY": f"{mem_size}"
-                }
-            ],
-            start_to_close_timeout=timedelta(minutes=10),
-            retry_policy=NO_RETRY
-        )
-        await workflow.execute_activity(
-            watch_k8s_job_sync,
-            args=[qlever_job_name],
-            start_to_close_timeout=LONG_RUNNING_JOB_TIMEOUT,
-            retry_policy=NO_RETRY
+        await self._run_job_and_wait(
+            job_type="qlever-index-job",
+            job_name=qlever_job_name,
+            command=["bash"],
+            args=["-c", qlever_cmd],
+            env_vars={"STXXL_MEMORY": f"{self.mem_size}"},
+            watch_timeout=LONG_RUNNING_JOB_TIMEOUT,
         )
 
-        # 6. Documentation Job
-        # doc_job_name = f"{job_name}-doc"
-        # await workflow.execute_activity(
-        #     run_k8s_job,
-        #     args=[
-        #         "documentation-job",
-        #         doc_job_name,
-        #         repo_id,
-        #         branch_id,
-        #         None,
-        #         [doc_path, real_hdt_path, kg_title, f"{kg_title}-documentation-update"],
-        #         {
-        #             "requests": {"cpu": str(cpu), "memory": memory, "ephemeral-storage": ephemeral},
-        #             "limits": {"cpu": str(cpu), "memory": memory, "ephemeral-storage": ephemeral}
-        #         },
-        #         {"WORKING_DIR": working_dir}
-        #     ],
-        #     start_to_close_timeout=timedelta(minutes=10),
-        #     retry_policy=NO_RETRY
-        # )
+    # 6. Documentation job — disabled. Re-enable by uncommenting this method and its
+    # call in run() (between _run_qlever_index and _upload_outputs). NOTE: the original
+    # inline version was submit-only; _run_job_and_wait also watches the job to terminal,
+    # which is almost certainly the desired behavior on re-enable.
+    # async def _run_documentation(self, doc_path) -> None:
+    #     real_hdt_path = f"{self.working_dir}/hdt" if self.convert_to_hdt else f"{self.working_dir}/{self.hdt_path}"
+    #     await self._run_job_and_wait(
+    #         job_type="documentation-job",
+    #         job_name=f"{self.job_name}-doc",
+    #         command=None,
+    #         args=[doc_path, real_hdt_path, self.kg_title, f"{self.kg_title}-documentation-update"],
+    #         env_vars={"WORKING_DIR": self.working_dir},
+    #         watch_timeout=LONG_RUNNING_JOB_TIMEOUT,
+    #     )
 
-        # 7. Upload output files to LakeFS
-        hdt_location = f"{local_dir}/hdt"
-        nt_location = f"{local_dir}/nt"
-        qlever_location = f"{local_dir}/qlever"
+    async def _upload_outputs(self):
+        hdt_location = f"{self.local_dir}/hdt"
+        nt_location = f"{self.local_dir}/nt"
+        qlever_location = f"{self.local_dir}/qlever"
         local_files = [
             [f"{hdt_location}/graph.hdt", "hdt"],
             [f"{hdt_location}/graph.hdt.index.v1-1", "hdt"],
@@ -368,57 +321,58 @@ class HDTConversionWorkflow:
             get_qlever_index_files,
             args=[qlever_location],
             start_to_close_timeout=timedelta(minutes=1),
-            retry_policy=NO_RETRY
+            retry_policy=NO_RETRY,
         )
         if qlever_files:
             local_files.extend(qlever_files)
 
         upload_result = await workflow.execute_activity(
             upload_output_files,
-            args=[repo_id, branch_id, local_files],
+            args=[self.repo_id, self.branch_id, local_files],
             start_to_close_timeout=timedelta(hours=2),
-            retry_policy=NO_RETRY
+            retry_policy=NO_RETRY,
         )
 
         void_repo, void_branch = app_config.void_repo.split(':')
         files = [
-            [f"{hdt_location}/void.nt", f"{repo_id}"]
+            [f"{hdt_location}/void.nt", f"{self.repo_id}"]
         ]
         upload_void = await workflow.execute_activity(
             upload_output_files,
-            args=[void_repo, branch_id, files],
+            args=[void_repo, self.branch_id, files],
             start_to_close_timeout=timedelta(hours=2),
-            retry_policy=NO_RETRY
+            retry_policy=NO_RETRY,
         )
 
+        return upload_result, upload_void, void_repo
 
-        # 7. Notify
+    async def _notify_and_email(self, upload_result, upload_void, void_repo) -> None:
         await workflow.execute_activity(
             notify_slack,
-            f"✔️ HDT & NT files uploaded for: {app_config.lakefs_public_url}repositories/{repo_id}/objects?ref={upload_result['stable_branch_name']}"
+            f"✔️ HDT & NT files uploaded for: {app_config.lakefs_public_url}repositories/{self.repo_id}/objects?ref={upload_result['stable_branch_name']}"
             f"Void uploaded to {app_config.lakefs_public_url}repositories/{void_repo}/objects?ref={upload_void['stable_branch_name']}",
             start_to_close_timeout=timedelta(minutes=1),
-            retry_policy=NO_RETRY
+            retry_policy=NO_RETRY,
         )
 
-        if kg_config.emails:
-            email_to = ",".join(kg_config.emails)
+        if self.kg_config.emails:
+            email_to = ",".join(self.kg_config.emails)
             await workflow.execute_activity(
                 send_review_email,
                 args=[
                     email_to,
                     upload_result['stable_branch_name'],
                     upload_result['future_tag'],
-                    repo_id
+                    self.repo_id
                 ],
                 start_to_close_timeout=timedelta(minutes=2),
-                retry_policy=NO_RETRY
+                retry_policy=NO_RETRY,
             )
 
-        # 8. Cleanup local files
+    async def _cleanup(self) -> None:
         await workflow.execute_activity(
             cleanup_local_files,
-            repo_id,
+            self.repo_id,
             start_to_close_timeout=timedelta(minutes=5),
-            retry_policy=NO_RETRY
+            retry_policy=NO_RETRY,
         )

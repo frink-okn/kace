@@ -293,9 +293,9 @@ class HDTConversionWorkflow:
             f"cd {working_dir}/qlever; "
             f"IndexBuilderMain -i {kg_title} -s /qlever/frink-qlever.settings.json "
             f"{unzip_stream}"
-            f"-g https://purl.org/okn/frink/kg/{kg_title} -F nt "
+            f"-g {dataset_uri} -F nt "
             f"-f {working_dir}/hdt/void.nt "
-            f"-g void -F nt  --stxxl-memory {mem_size} "
+            f"-g {dataset_uri}#void -F nt  --stxxl-memory {mem_size} "
         )
 
         await workflow.execute_activity(

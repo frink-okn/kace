@@ -1,5 +1,6 @@
 from temporalio import workflow
 from datetime import timedelta
+from dataclasses import dataclass
 with workflow.unsafe.imports_passed_through():
     from ..activities import (
         run_k8s_job,
@@ -30,25 +31,36 @@ NO_RETRY = RetryPolicy(maximum_attempts=1)
 OUTPUT_PREFIXES = ['qlever/', 'hdt/', 'nt/', 'void/']
 
 
+@dataclass
+class HDTConversionInput:
+    """Input to HDTConversionWorkflow. A single object (not positional args) so
+    fields can be added later without breaking the workflow's argument contract.
+
+    The resource/profile fields are required (no defaults): each caller owns its
+    own profile (the /convert_to_hdt endpoint via Query defaults, neo4j via explicit
+    values), so there is no single hidden default that silently applies to one path.
+    Only the genuinely-optional inputs default to None."""
+    action_payload: dict
+    doc_path: str
+    cpu: int
+    memory: str
+    ephemeral: str
+    java_opts: str
+    mem_size: str
+    convert_to_hdt: bool
+    hdt_path: str
+    exclude_files: list | None = None
+    exclude_known_extension: list | None = None
+    files_list: list | None = None
+
+
 @workflow.defn
 class HDTConversionWorkflow:
     @workflow.run
-    async def run(self, action_payload: dict, doc_path: str,
-                  cpu: int = 1, memory: str = "28Gi", ephemeral: str = "512Mi",
-                  java_opts: str = "-Xmx25G -Xms25G -Xss512m -XX:+UseParallelGC",
-                  mem_size: str = "25G", convert_to_hdt: bool = True, hdt_path: str = "/",
-                  exclude_files: list = None, exclude_known_extension: list = None,
-                  files_list: list = None) -> None:
-
-        # Stash run params & derived values shared across the phase helpers.
-        self.action_payload = action_payload
-        self.cpu = cpu
-        self.memory = memory
-        self.ephemeral = ephemeral
-        self.java_opts = java_opts
-        self.mem_size = mem_size
-        self.convert_to_hdt = convert_to_hdt
-        self.hdt_path = hdt_path
+    async def run(self, input: HDTConversionInput) -> None:
+        # All run inputs live on self.input; derived values are computed onto self below.
+        self.input = input
+        action_payload = input.action_payload
 
         self.repo_id = action_payload['repository_id']
         self.branch_id = action_payload['branch_id']
@@ -69,8 +81,8 @@ class HDTConversionWorkflow:
 
         # Resources + env reused by every K8s job in this run.
         self.resources = {
-            "requests": {"cpu": str(cpu), "memory": memory, "ephemeral-storage": ephemeral},
-            "limits": {"cpu": str(cpu), "memory": memory, "ephemeral-storage": ephemeral},
+            "requests": {"cpu": str(input.cpu), "memory": input.memory, "ephemeral-storage": input.ephemeral},
+            "limits": {"cpu": str(input.cpu), "memory": input.memory, "ephemeral-storage": input.ephemeral},
         }
         self.env_base = {
             "GH_HANDLES": ",".join(self.kg_config.github_handles),
@@ -82,7 +94,7 @@ class HDTConversionWorkflow:
         self.dataset_uri = f"https://purl.org/okn/frink/kg/{self.kg_title}"
 
         # 2. Download input files (skipped if files_list already provided)
-        file_list = await self._download_inputs(files_list, exclude_files, exclude_known_extension)
+        file_list = await self._download_inputs(input.files_list, input.exclude_files, input.exclude_known_extension)
 
         # 3. Run HDT and NT conversion jobs
         await self._run_hdt_convert(file_list)
@@ -97,7 +109,7 @@ class HDTConversionWorkflow:
         await self._run_qlever_index()
 
         # 6. Documentation job
-        # await self._run_documentation(doc_path)
+        # await self._run_documentation(self.input.doc_path)
 
         # 7. Upload
         upload_result, upload_void, void_repo = await self._upload_outputs()
@@ -136,7 +148,7 @@ class HDTConversionWorkflow:
             workflow.logger.info(f"Using provided files_list ({len(files_list)} files) — skipping download")
             return [x.replace('/local/', '/mnt/repo/') for x in files_list]
 
-        if self.convert_to_hdt:
+        if self.input.convert_to_hdt:
             files_list = await workflow.execute_activity(
                 download_input_files,
                 args=[self.repo_id, self.branch_id, None, exclude_files, exclude_known_extension, True, OUTPUT_PREFIXES],
@@ -159,7 +171,7 @@ class HDTConversionWorkflow:
             self.working_dir + '/hdt-tmp/',
             '--index',
             '--memory-limit',
-            self.mem_size,
+            self.input.mem_size,
             '-v',
             '--output',
             self.working_dir + '/hdt/graph.hdt',
@@ -183,7 +195,7 @@ class HDTConversionWorkflow:
             job_name=self.job_name,
             command=None,
             args=hdt_convert_args,
-            env_vars={**self.env_base, "JAVA_OPTIONS": self.java_opts, "MEM_SIZE": self.mem_size},
+            env_vars={**self.env_base, "JAVA_OPTIONS": self.input.java_opts, "MEM_SIZE": self.input.mem_size},
             watch_timeout=LONG_RUNNING_JOB_TIMEOUT,
         )
 
@@ -195,7 +207,7 @@ class HDTConversionWorkflow:
             job_name=nt_job_name,
             command=["/bin/sh"],
             args=nt_convert_args,
-            env_vars={**self.env_base, "JAVA_OPTIONS": self.java_opts},
+            env_vars={**self.env_base, "JAVA_OPTIONS": self.input.java_opts},
             watch_timeout=LONG_RUNNING_JOB_TIMEOUT,
         )
 
@@ -211,7 +223,7 @@ class HDTConversionWorkflow:
         )
 
     async def _run_void(self) -> None:
-        real_hdt_path = f"{self.working_dir}/hdt" if self.convert_to_hdt else f"{self.working_dir}/{self.hdt_path}"
+        real_hdt_path = f"{self.working_dir}/hdt" if self.input.convert_to_hdt else f"{self.working_dir}/{self.input.hdt_path}"
         void_job_name = f"{self.job_name}-void"
         void_input = f"{real_hdt_path}/graph.hdt"
         void_output = f"{real_hdt_path}/void.nt"
@@ -225,8 +237,8 @@ class HDTConversionWorkflow:
         )
 
     async def _write_build_version(self) -> None:
-        if self.action_payload.get('commit_id'):
-            version = self.action_payload['commit_id'][:7]
+        if self.input.action_payload.get('commit_id'):
+            version = self.input.action_payload['commit_id'][:7]
         else:
             version = "NA"
 
@@ -272,7 +284,7 @@ class HDTConversionWorkflow:
             f"{unzip_stream}"
             f"-g {self.dataset_uri} -F nt "
             f"-f {self.working_dir}/hdt/void.nt "
-            f"-g {self.dataset_uri}#void -F nt  --stxxl-memory {self.mem_size} "
+            f"-g {self.dataset_uri}#void -F nt  --stxxl-memory {self.input.mem_size} "
         )
 
         await workflow.execute_activity(
@@ -287,7 +299,7 @@ class HDTConversionWorkflow:
             job_name=qlever_job_name,
             command=["bash"],
             args=["-c", qlever_cmd],
-            env_vars={"STXXL_MEMORY": f"{self.mem_size}"},
+            env_vars={"STXXL_MEMORY": f"{self.input.mem_size}"},
             watch_timeout=LONG_RUNNING_JOB_TIMEOUT,
         )
 
@@ -296,7 +308,7 @@ class HDTConversionWorkflow:
     # inline version was submit-only; _run_job_and_wait also watches the job to terminal,
     # which is almost certainly the desired behavior on re-enable.
     # async def _run_documentation(self, doc_path) -> None:
-    #     real_hdt_path = f"{self.working_dir}/hdt" if self.convert_to_hdt else f"{self.working_dir}/{self.hdt_path}"
+    #     real_hdt_path = f"{self.working_dir}/hdt" if self.input.convert_to_hdt else f"{self.working_dir}/{self.input.hdt_path}"
     #     await self._run_job_and_wait(
     #         job_type="documentation-job",
     #         job_name=f"{self.job_name}-doc",

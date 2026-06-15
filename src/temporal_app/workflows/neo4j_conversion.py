@@ -145,10 +145,10 @@ class Neo4jConversionWorkflow:
                 action_payload=action_payload,
                 doc_path=kg_config.frink_options.documentation_path,
                 cpu=1,
-                memory="28Gi",
+                pod_memory="28Gi",
                 ephemeral="512Mi",
                 java_opts="-Xmx25G -Xms25G -Xss512m -XX:+UseParallelGC",
-                mem_size="25G",
+                program_memory="25G",
                 convert_to_hdt=True,
                 hdt_path="/",
                 files_list=nt_files,  # triggers skip of download

@@ -43,10 +43,10 @@ class HDTConversionInput:
     action_payload: dict
     doc_path: str
     cpu: int
-    memory: str
+    pod_memory: str
     ephemeral: str
     java_opts: str
-    mem_size: str
+    program_memory: str
     convert_to_hdt: bool
     hdt_path: str
     exclude_files: list | None = None
@@ -81,8 +81,8 @@ class HDTConversionWorkflow:
 
         # Resources + env reused by every K8s job in this run.
         self.resources = {
-            "requests": {"cpu": str(input.cpu), "memory": input.memory, "ephemeral-storage": input.ephemeral},
-            "limits": {"cpu": str(input.cpu), "memory": input.memory, "ephemeral-storage": input.ephemeral},
+            "requests": {"cpu": str(input.cpu), "memory": input.pod_memory, "ephemeral-storage": input.ephemeral},
+            "limits": {"cpu": str(input.cpu), "memory": input.pod_memory, "ephemeral-storage": input.ephemeral},
         }
         self.env_base = {
             "GH_HANDLES": ",".join(self.kg_config.github_handles),
@@ -171,7 +171,7 @@ class HDTConversionWorkflow:
             self.working_dir + '/hdt-tmp/',
             '--index',
             '--memory-limit',
-            self.input.mem_size,
+            self.input.program_memory,
             '-v',
             '--output',
             self.working_dir + '/hdt/graph.hdt',
@@ -195,7 +195,7 @@ class HDTConversionWorkflow:
             job_name=self.job_name,
             command=None,
             args=hdt_convert_args,
-            env_vars={**self.env_base, "JAVA_OPTIONS": self.input.java_opts, "MEM_SIZE": self.input.mem_size},
+            env_vars={**self.env_base, "JAVA_OPTIONS": self.input.java_opts, "MEM_SIZE": self.input.program_memory},
             watch_timeout=LONG_RUNNING_JOB_TIMEOUT,
         )
 
@@ -284,7 +284,7 @@ class HDTConversionWorkflow:
             f"{unzip_stream}"
             f"-g {self.dataset_uri} -F nt "
             f"-f {self.working_dir}/hdt/void.nt "
-            f"-g {self.dataset_uri}#void -F nt  --stxxl-memory {self.input.mem_size} "
+            f"-g {self.dataset_uri}#void -F nt  --stxxl-memory {self.input.program_memory} "
         )
 
         await workflow.execute_activity(
@@ -299,7 +299,7 @@ class HDTConversionWorkflow:
             job_name=qlever_job_name,
             command=["bash"],
             args=["-c", qlever_cmd],
-            env_vars={"STXXL_MEMORY": f"{self.input.mem_size}"},
+            env_vars={"STXXL_MEMORY": f"{self.input.program_memory}"},
             watch_timeout=LONG_RUNNING_JOB_TIMEOUT,
         )
 

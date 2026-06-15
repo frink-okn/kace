@@ -33,13 +33,6 @@ OUTPUT_PREFIXES = ['qlever/', 'hdt/', 'nt/', 'void/']
 
 @dataclass
 class HDTConversionInput:
-    """Input to HDTConversionWorkflow. A single object (not positional args) so
-    fields can be added later without breaking the workflow's argument contract.
-
-    The resource/profile fields are required (no defaults): each caller owns its
-    own profile (the /convert_to_hdt endpoint via Query defaults, neo4j via explicit
-    values), so there is no single hidden default that silently applies to one path.
-    Only the genuinely-optional inputs default to None."""
     action_payload: dict
     doc_path: str
     cpu: int

@@ -65,7 +65,7 @@ Two workflows are registered in the worker but have **no HTTP trigger**: `Deploy
 
 ## Federated QLever index build (QLeverIndexWorkflow)
 
-Builds one big qlever index over ~all KGs + s2 geo-augmentation graphs. Triggered by `POST /trigger_qlever_index` (workflow id `qlever-index-build`, single-flight, cancels prior).
+Builds one big qlever index over ~all KGs + s2 geo-augmentation graphs. Triggered by `POST /trigger_qlever_index` (workflow id `qlever-index-build`, single-flight, cancels prior), or automatically by a **Temporal Schedule** (`qlever_index_schedule_id`, default `qlever-index-weekly`) that `worker.py` upserts on boot via `temporal_app/schedules.py`. Default cron `0 18 * * 5` UTC (Friday 18:00 — the ~1d17h build finishes before Sunday night); overlap policy `SKIP` so a fire never stacks on an in-flight build. Toggle/retime with `qlever_index_schedule_{enabled,cron,timezone}` (config + values.yaml `app_config`). The schedule fires the same `qlever-index-build` workflow id, so it shares single-flight with the manual endpoint.
 
 Layout:
 

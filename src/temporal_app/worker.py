@@ -1,6 +1,7 @@
 import asyncio
 from temporalio.worker import Worker
 from .client import get_client
+from .schedules import ensure_qlever_index_schedule
 from log_util import LoggingUtil
 
 from .activities import (
@@ -60,6 +61,13 @@ logger = LoggingUtil.init_logging(__name__)
 
 async def main():
     client = await get_client()
+
+    # Register/refresh recurring schedules (weekly QLever index build).
+    try:
+        await ensure_qlever_index_schedule(client)
+    except Exception as e:
+        # Don't let a schedule hiccup block the worker from serving workflows.
+        logger.warning(f"Could not ensure QLever index schedule: {e}")
 
     # Define the task queue name (parallel to Celery queue)
     task_queue = "frink-temporal-queue"

@@ -63,6 +63,10 @@ class Config(BaseModel):
     qlever_federation_index_basename: str
     qlever_federation_prefix: str
     qlever_federation_extra_args: list[str]
+    qlever_index_schedule_enabled: bool
+    qlever_index_schedule_id: str
+    qlever_index_schedule_cron: str
+    qlever_index_schedule_timezone: str
 
 
 
@@ -124,4 +128,9 @@ config = Config(
     qlever_federation_index_basename=os.environ.get('QLEVER_FEDERATION_INDEX_BASENAME', 'frink'),
     qlever_federation_prefix=os.environ.get('QLEVER_FEDERATION_PREFIX', 'federation'),
     qlever_federation_extra_args=[a.strip() for a in os.environ.get('QLEVER_FEDERATION_EXTRA_ARGS', '').split(',') if a.strip()],
+    qlever_index_schedule_enabled=os.environ.get('QLEVER_INDEX_SCHEDULE_ENABLED', 'true').lower() == 'true',
+    qlever_index_schedule_id=os.environ.get('QLEVER_INDEX_SCHEDULE_ID', 'qlever-index-weekly'),
+    # Default: Friday 18:00 (after 5PM) — multi-day build (~1d17h) finishes well before Sunday night.
+    qlever_index_schedule_cron=os.environ.get('QLEVER_INDEX_SCHEDULE_CRON', '0 18 * * 5'),
+    qlever_index_schedule_timezone=os.environ.get('QLEVER_INDEX_SCHEDULE_TIMEZONE', 'UTC'),
 )

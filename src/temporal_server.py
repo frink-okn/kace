@@ -8,6 +8,7 @@ from models.kg_metadata import KGConfig, KG # Added KG
 from config import config
 from canary.slack import slack_canary
 from temporal_app.client import get_client
+from temporal_app.workflows.hdt_conversion import HDTConversionInput
 from temporalio.client import WorkflowExecutionStatus
 
 app = FastAPI(
@@ -108,20 +109,18 @@ async def convert_to_hdt(
     # Start the workflow
     handle = await client.start_workflow(
         "HDTConversionWorkflow",
-        args=[
-            action_model.dict(),
-            kg_config.frink_options.documentation_path,
-            cpu,
-            memory,
-            ephemeral,
-            java_opts,
-            mem_size,
-            not hdt_exists,   # convert_to_hdt
-            hdt_path,
-            parsed_exclude_files,
-            None,  # exclude_known_extension
-            None,  # files_list
-        ],
+        HDTConversionInput(
+            action_payload=action_model.dict(),
+            doc_path=kg_config.frink_options.documentation_path,
+            cpu=cpu,
+            pod_memory=memory,
+            ephemeral=ephemeral,
+            java_opts=java_opts,
+            program_memory=mem_size,
+            convert_to_hdt=not hdt_exists,
+            hdt_path=hdt_path,
+            exclude_files=parsed_exclude_files,
+        ),
         id=workflow_id,
         task_queue="frink-temporal-queue",
     )

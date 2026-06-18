@@ -11,7 +11,7 @@ with workflow.unsafe.imports_passed_through():
         KG,
         app_config
     )
-    from .hdt_conversion import HDTConversionWorkflow
+    from .hdt_conversion import HDTConversionWorkflow, HDTConversionInput
 
 # Default timeouts
 LONG_RUNNING_JOB_TIMEOUT = timedelta(hours=42)
@@ -141,17 +141,18 @@ class Neo4jConversionWorkflow:
 
         await workflow.execute_child_workflow(
             HDTConversionWorkflow.run,
-            args=[
-                action_payload,
-                kg_config.frink_options.documentation_path,
-                # remaining params use defaults: cpu, memory, ephemeral, java_opts, mem_size,
-                # convert_to_hdt, hdt_path, exclude_files, exclude_known_extension
-                1, "28Gi", "512Mi",
-                "-Xmx25G -Xms25G -Xss512m -XX:+UseParallelGC",
-                "25G", True, "/",
-                None, None,
-                nt_files,  # files_list — triggers skip of download
-            ],
+            HDTConversionInput(
+                action_payload=action_payload,
+                doc_path=kg_config.frink_options.documentation_path,
+                cpu=1,
+                pod_memory="28Gi",
+                ephemeral="512Mi",
+                java_opts="-Xmx25G -Xms25G -Xss512m -XX:+UseParallelGC",
+                program_memory="25G",
+                convert_to_hdt=True,
+                hdt_path="/",
+                files_list=nt_files,  # triggers skip of download
+            ),
             id=f"hdt-{job_name_base}",
             retry_policy=NO_RETRY
         )

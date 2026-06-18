@@ -66,6 +66,7 @@ async def convert_to_hdt(
     hdt_exists: bool = Query(False),
     hdt_path: str = Query("hdt/"),
     exclude_files: str = Query(""),
+    exclude_known_extension: str = Query(""),
 ):
     """
     Trigger the HDTConversionWorkflow via Temporal.
@@ -105,6 +106,7 @@ async def convert_to_hdt(
 
     # Parse exclude_files
     parsed_exclude_files = [x.strip() for x in exclude_files.split(",") if x.strip()] if exclude_files else None
+    parsed_exclude_known_extension = [x.strip().lstrip(".") for x in exclude_known_extension.split(",") if x.strip()] if exclude_known_extension else None
 
     # Start the workflow
     handle = await client.start_workflow(
@@ -120,6 +122,7 @@ async def convert_to_hdt(
             convert_to_hdt=not hdt_exists,
             hdt_path=hdt_path,
             exclude_files=parsed_exclude_files,
+            exclude_known_extension=parsed_exclude_known_extension
         ),
         id=workflow_id,
         task_queue="frink-temporal-queue",

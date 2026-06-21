@@ -280,11 +280,29 @@ async def download_hdt_files_activity(repo: str, branch: str, kg_name: str, hdt_
 
 @activity.defn
 async def download_file_lakefs(repo: str, remote_path: str, local_path: str, ref: str = None) -> None:
-    # this function in io_util is async
-    if ref:
-        await download_file_at_ref(repo, ref, remote_path, local_path)
-    else:
-        await download_file_from_latest_tag(repo, remote_path, local_path)
+    # Watchdog heartbeat: the in-loop heartbeats in io_util only fire while
+    # chunks flow. A stalled part (sock_read timeout + backoff) or a saturated
+    # to_thread pool can starve them past heartbeat_timeout. This timer keeps
+    # the activity alive independent of data flow, so only a truly hung worker
+    # trips the timeout.
+    # ponytail: fixed 30s tick; fine since heartbeat_timeout is minutes-scale.
+    async def _watchdog():
+        while True:
+            await asyncio.sleep(30)
+            try:
+                activity.heartbeat({"file": remote_path, "watchdog": True})
+            except Exception:
+                pass
+
+    hb = asyncio.ensure_future(_watchdog())
+    try:
+        # this function in io_util is async
+        if ref:
+            await download_file_at_ref(repo, ref, remote_path, local_path)
+        else:
+            await download_file_from_latest_tag(repo, remote_path, local_path)
+    finally:
+        hb.cancel()
     if not os.path.exists(local_path):
         raise Exception(
             f"Download produced no file at {local_path} for "

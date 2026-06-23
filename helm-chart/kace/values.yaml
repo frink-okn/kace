@@ -178,7 +178,8 @@ app_config:
   qlever_state_configmap: "kace-qlever-state"
   qlever_index_pvc_prefix: "kace-qlever-index-"
   qlever_index_previous_ttl_hours: "24"
-  qlever_download_concurrency: "4"
+  qlever_download_concurrency: "2"
+  LAKEFS_DOWNLOAD_PARTS: "4"
   qlever_num_triples_per_batch: "5000000"
   # QLever federation server (/federation)
   qlever_federation_cpu: "8"

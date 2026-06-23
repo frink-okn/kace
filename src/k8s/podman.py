@@ -195,6 +195,12 @@ class JobMan:
             metadata=client.V1ObjectMeta(name=name),
             spec=client.V1JobSpec(
                 template=client.V1PodTemplateSpec(
+                    # ponytail: block GKE Autopilot/cluster-autoscaler from evicting
+                    # long-running batch pods (e.g. multi-day qlever index build) during
+                    # node consolidation. Autopilot honors this for runs < 7d.
+                    metadata=client.V1ObjectMeta(
+                        annotations={"cluster-autoscaler.kubernetes.io/safe-to-evict": "false"}
+                    ),
                     spec=client.V1PodSpec(
                         containers=[container],
                         restart_policy="Never",

@@ -96,6 +96,7 @@ class HDTConversionWorkflow:
 
         # 4. VOID job and build-version TTL
         await self._run_void()
+        await self._run_void_labels()
         await self._write_build_version()
 
         # 5. QLever index job
@@ -219,12 +220,27 @@ class HDTConversionWorkflow:
         real_hdt_path = f"{self.working_dir}/hdt" if self.input.convert_to_hdt else f"{self.working_dir}/{self.input.hdt_path}"
         void_job_name = f"{self.job_name}-void"
         void_input = f"{real_hdt_path}/graph.hdt"
-        void_output = f"{real_hdt_path}/void.nt"
+        void_output = f"{real_hdt_path}/void.nt.pre"
         await self._run_job_and_wait(
             job_type="hdtc-job",
             job_name=void_job_name,
             command=None,
             args=["void", void_input, "--dataset-uri", self.dataset_uri, "-o", void_output],
+            env_vars=None,
+            watch_timeout=timedelta(hours=6),
+        )
+
+    async def _run_void_labels(self) -> None:
+        real_hdt_path = f"{self.working_dir}/hdt" if self.input.convert_to_hdt else f"{self.working_dir}/{self.input.hdt_path}"
+        real_hdt = f"{real_hdt_path}/graph.hdt"
+        void_job_name = f"{self.job_name}-void-labels"
+        void_input = f"{real_hdt_path}/void.nt.pre"
+        void_output = f"{real_hdt_path}/void.nt"
+        await self._run_job_and_wait(
+            job_type="hdtc-job",
+            job_name=void_job_name,
+            command=None,
+            args=["python", "void_add_labels_descriptions.py", "--input", void_input, "--output", void_output, real_hdt],
             env_vars=None,
             watch_timeout=timedelta(hours=6),
         )

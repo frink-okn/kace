@@ -202,7 +202,13 @@ class QLeverIndexWorkflow:
                 ["bash"],                                        # command
                 ["-c", specs["build_command"]],                  # args
                 {                                                # resources
-                    "requests": {"cpu": "1", "memory": "4Gi"},
+                    # request == limit (Guaranteed QoS): reserve the full
+                    # footprint so the build can't be evicted for bursting past
+                    # an undersized request when the node is under memory pressure.
+                    "requests": {
+                        "cpu":    app_config.qlever_indexer_cpu,
+                        "memory": app_config.qlever_indexer_memory,
+                    },
                     "limits": {
                         "cpu":    app_config.qlever_indexer_cpu,
                         "memory": app_config.qlever_indexer_memory,

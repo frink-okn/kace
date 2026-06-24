@@ -258,8 +258,12 @@ async def download_file(file_name, repo, branch, download_path,
                     async with session.get(file_url, headers=headers) as resp:
                         if resp.status not in (200, 206):
                             raise Exception(f"part {i} {file_name}: HTTP {resp.status}")
-                        async for buf in resp.content.iter_chunked(1024 * 1024):
-                            await asyncio.to_thread(os.pwrite, fd, buf, offset)
+                        # pwrite is a single fast syscall that releases the GIL;
+                        # offloading each chunk to a thread just churns the event
+                        # loop + executor (≈250k hops for a 246GB file), starving
+                        # the workflow task and heartbeats. Write inline, 8MB chunks.
+                        async for buf in resp.content.iter_chunked(8 * 1024 * 1024):
+                            os.pwrite(fd, buf, offset)
                             offset += len(buf)
                             now = loop.time()
                             if now - last_hb >= _HEARTBEAT_INTERVAL_SECS:

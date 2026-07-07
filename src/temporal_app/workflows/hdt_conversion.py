@@ -18,6 +18,7 @@ with workflow.unsafe.imports_passed_through():
         KG,
         app_config
     )
+    from ..augmentations import build_augmentation_jobs, build_merge_command
 
 # Default timeouts
 ACTIVITY_TIMEOUT = timedelta(minutes=60*2) # 2 hours
@@ -25,6 +26,7 @@ LONG_RUNNING_JOB_TIMEOUT = timedelta(hours=42)
 
 # Fail immediately on first error, no retries
 from temporalio.common import RetryPolicy
+from temporalio.exceptions import ApplicationError
 NO_RETRY = RetryPolicy(maximum_attempts=1)
 
 # Skip output directories from previous runs to avoid re-merging them
@@ -93,6 +95,10 @@ class HDTConversionWorkflow:
         await self._run_hdt_convert(file_list)
         await self._run_nt_merge()
         await self._run_riot_validate()
+
+        # 3b. Registry-configured augmentations (additive-only), merged into
+        # hdt/ and nt/ before VOID/qlever so every artifact sees the new triples
+        await self._run_augmentations()
 
         # 4. VOID job and build-version TTL
         await self._run_void()
@@ -212,6 +218,63 @@ class HDTConversionWorkflow:
             command=["/bin/validate-nt.sh"],
             args=None,
             env_vars=dict(self.env_base),
+            watch_timeout=LONG_RUNNING_JOB_TIMEOUT,
+        )
+
+    async def _run_augmentations(self) -> None:
+        """Run the KG's `frink-options.augmentations` steps from the registry
+        (catalog: temporal_app/augmentations.py). Each step emits new triples
+        from the built HDT into its own aug file; the merge job folds them into
+        graph.hdt (+index) and appends them to nt/graph.nt.gz. Additive-only by
+        construction. No-op when the registry configures nothing."""
+        opts = self.kg_config.frink_options
+        steps = opts.augmentations if opts else None
+        if not steps:
+            return
+
+        real_hdt_path = f"{self.working_dir}/hdt" if self.input.convert_to_hdt else f"{self.working_dir}/{self.input.hdt_path}"
+        hdt_file = f"{real_hdt_path}/graph.hdt"
+        try:
+            aug_jobs = build_augmentation_jobs(steps, hdt_file, f"{self.working_dir}/aug")
+            merge_cmd = build_merge_command(
+                hdt_file=hdt_file,
+                nt_file=f"{self.working_dir}/nt/graph.nt.gz",
+                aug_files=[out_file for _, out_file, _ in aug_jobs],
+                temp_dir=f"{self.working_dir}/hdt-tmp/",
+                memory_limit=self.input.program_memory,
+            )
+        except ValueError as err:
+            await workflow.execute_activity(
+                notify_slack,
+                f"⚠️ {self.repo_id}: invalid `augmentations` config in the registry — {err}",
+                start_to_close_timeout=timedelta(minutes=1),
+                retry_policy=NO_RETRY,
+            )
+            raise ApplicationError(f"Invalid augmentations config for {self.repo_id}: {err}",
+                                   non_retryable=True)
+
+        workflow.logger.info(f"Running {len(aug_jobs)} augmentation step(s) for {self.kg_title}")
+        await workflow.execute_activity(
+            create_local_dir,
+            args=[self.local_dir + '/aug', True],
+            start_to_close_timeout=timedelta(minutes=1),
+            retry_policy=NO_RETRY,
+        )
+        for job_suffix, _, aug_cmd in aug_jobs:
+            await self._run_job_and_wait(
+                job_type="hdtc-job",
+                job_name=f"{self.job_name}-{job_suffix}",
+                command=["/bin/bash"],
+                args=["-c", aug_cmd],
+                env_vars=dict(self.env_base),
+                watch_timeout=timedelta(hours=6),
+            )
+        await self._run_job_and_wait(
+            job_type="hdtc-job",
+            job_name=f"{self.job_name}-aug-merge",
+            command=["/bin/bash"],
+            args=["-c", merge_cmd],
+            env_vars={**self.env_base, "JAVA_OPTIONS": self.input.java_opts, "MEM_SIZE": self.input.program_memory},
             watch_timeout=LONG_RUNNING_JOB_TIMEOUT,
         )
 

@@ -24,12 +24,20 @@ class Contact(BaseModel):
             # Ensure all elements are strings and stripped
             return [str(v).strip() for v in value if str(v).strip()]
         return value
+# One registry-configured augmentation step (additive-only). `name` must exist
+# in the catalog in temporal_app/augmentations.py; params are validated there
+# at workflow start, before any jobs run.
+class AugmentationStep(BaseModel):
+    name: str
+    params: Dict[str, Union[str, List[str]]] = Field(default_factory=dict)
+
 # Define a model for the nested "frink-options"
 class FrinkOptions(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
     documentation_path: Optional[str] = Field(alias="documentation-path")
     lakefs_repo: Optional[str] = Field(alias="lakefs-repo")
     neo4j_conversion_config_path: Optional[str] = Field(alias="neo4j-conversion-config-path", default="")
+    augmentations: Optional[List[AugmentationStep]] = Field(default_factory=list)
 
 # Define a model for each KG item
 class KG(BaseModel):

@@ -163,20 +163,116 @@ async def deploy_ldf(kg_config: dict, lakefs_action: dict) -> None:
     )
 
 
+def _qlever_names(kg_config: dict, lakefs_action: dict):
+    """(kg_name, version, pvc_name) — one place, used by both the index-fetch
+    Job and the Deployment so they always agree on the PVC."""
+    kg_name = KG(**kg_config).shortname
+    action = LakefTagCreationModel(**lakefs_action)
+    version = action.tag_id or (action.commit_id[:7] if action.commit_id else None)
+    sanitized_version = str(version).replace('.', '-').replace('_', '-')
+    return kg_name, version, f"frink-{kg_name}-qlever-pvc-{sanitized_version}"
+
+
+@activity.defn
+async def submit_qlever_index_fetch(kg_config: dict, lakefs_action: dict,
+                                    pvc_storage_size: str = "2Gi") -> str:
+    """Populate the QLever PVC with the index via a one-shot Job.
+
+    This used to be an initContainer in server-deployment.j2. It moved out so
+    the serving pod is a single container: no re-download on every restart, and
+    the init container's (larger) resource request stops being billed for the
+    pod's whole life. See the comment at the top of server-deployment.j2.
+
+    Returns the Job name to watch, or "" when there is nothing to fetch.
+    """
+    from k8s import qlever_server_manager
+    from kubernetes import client as k8s_client
+
+    kg_name, version, pvc_name = _qlever_names(kg_config, lakefs_action)
+    action = LakefTagCreationModel(**lakefs_action)
+    branch = action.tag_id or action.commit_id
+    deployment_name = f"frink-{kg_name}-qlever-server"
+    apps = k8s_client.AppsV1Api()
+
+    try:
+        dep = apps.read_namespaced_deployment(name=deployment_name, namespace=app_config.k8s_namespace)
+    except k8s_client.exceptions.ApiException:
+        dep = None
+
+    if dep and (dep.metadata.labels or {}).get("version") == str(version) \
+            and (dep.status.available_replicas or 0) > 0:
+        logger.info(f"{deployment_name} already serving {version}; skipping index fetch")
+        return ""
+
+    if dep and qlever_server_manager.use_private_pvc:
+        claims = {v.persistent_volume_claim.claim_name
+                  for v in (dep.spec.template.spec.volumes or [])
+                  if v.persistent_volume_claim}
+        if pvc_name in claims:
+            # RWO: an unhealthy pod still holding this volume would keep the Job
+            # Pending forever. Free it first, deploy_qlever scales back up.
+            logger.info(f"Scaling {deployment_name} to 0 to release {pvc_name}")
+            apps.patch_namespaced_deployment_scale(
+                name=deployment_name, namespace=app_config.k8s_namespace,
+                body={"spec": {"replicas": 0}})
+            core = k8s_client.CoreV1Api()
+            for _ in range(60):
+                pods = core.list_namespaced_pod(
+                    namespace=app_config.k8s_namespace,
+                    label_selector=f"app={deployment_name}")
+                if not pods.items:
+                    break
+                await asyncio.sleep(5)
+
+    qlever_server_manager.create_or_update_pvc(
+        parameters={
+            "kg_name": kg_name,
+            "pvc_name": pvc_name,
+            "pvc_storage_size": pvc_storage_size,
+            "qlever_storage_class": config.qlever_storage_class,
+        },
+        annotations={"kg-name": kg_name, "version": str(version)},
+    )
+
+    # `.fetch-complete` makes a re-run of the same version a no-op instead of a
+    # full re-download.
+    script = (
+        f"set -e\n"
+        f"mkdir -p /data/{kg_name}\n"
+        f"if [ -f /data/{kg_name}/.fetch-complete ]; then echo 'index already present'; exit 0; fi\n"
+        f"/s5cmd --endpoint-url \"$LAKEFS_URL\" cp "
+        f"\"s3://{action.repository_id}/{branch}/qlever/*\" /data/{kg_name}/\n"
+        f"chmod -R 777 /data/{kg_name}\n"
+        f"touch /data/{kg_name}/.fetch-complete\n"
+    )
+
+    job_name = f"qlever-fetch-{pvc_name}"[:63].rstrip("-")
+    JobMan().run_job(
+        job_type="qlever-fetch-job",
+        job_name=job_name,
+        repo=action.repository_id,
+        branch=branch,
+        command=["/bin/sh", "-c", script],
+        resources={"requests": {"cpu": "1", "memory": "1Gi"},
+                   "limits": {"cpu": "1", "memory": "1Gi"}},
+        env_vars={
+            "LAKEFS_URL": config.lakefs_url,
+            "AWS_ACCESS_KEY_ID": config.lakefs_access_key,
+            "AWS_SECRET_ACCESS_KEY": config.lakefs_secret_key,
+        },
+        extra_pvcs=[{"name": "index", "claim": pvc_name, "mount_path": "/data"}],
+    )
+    logger.info(f"Submitted index fetch job {job_name} for {kg_name}@{version}")
+    return job_name
+
+
 @activity.defn
 async def deploy_qlever(kg_config: dict, lakefs_action: dict, cpu: str = "1", memory: str = "2G", mem_size: str = None, pvc_storage_size: str = "2Gi", qlever_args: list = None) -> None:
     from k8s import qlever_server_manager
     kg_config_obj = KG(**kg_config)
     lakefs_action_obj = LakefTagCreationModel(**lakefs_action)
     
-    kg_name = kg_config_obj.shortname
-    
-    version = lakefs_action_obj.tag_id
-    if not version and lakefs_action_obj.commit_id:
-        version = lakefs_action_obj.commit_id[:7]
-    
-    # We sanitize the version to be DNS-1123 compatible (used in PVC naming)
-    sanitized_version = str(version).replace('.', '-').replace('_', '-')
+    kg_name, version, pvc_name = _qlever_names(kg_config, lakefs_action)
     
     annotations = {
         "kg-name": kg_name,
@@ -209,7 +305,7 @@ async def deploy_qlever(kg_config: dict, lakefs_action: dict, cpu: str = "1", me
     parameters = {
         "kg_name": kg_name,
         "version": version,
-        "pvc_name": f"frink-{kg_name}-qlever-pvc-{sanitized_version}",
+        "pvc_name": pvc_name,
         "lakefs_url": config.lakefs_url.replace("https://", "s3://").replace("http://", "s3://"),  # s5cmd s3 url
         "lakefs_access_key": config.lakefs_access_key,
         "lakefs_secret_key": config.lakefs_secret_key,

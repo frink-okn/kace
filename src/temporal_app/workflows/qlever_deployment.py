@@ -5,7 +5,9 @@ with workflow.unsafe.imports_passed_through():
     from ..activities import (
         deploy_qlever,
         notify_email_deployed,
-        get_qlever_storage_size
+        get_qlever_storage_size,
+        submit_qlever_index_fetch,
+        watch_k8s_job_sync,
     )
 
 from temporalio.common import RetryPolicy
@@ -26,6 +28,24 @@ class QLeverDeploymentWorkflow:
             start_to_close_timeout=timedelta(minutes=5),
             retry_policy=NO_RETRY
         )
+
+        # Load the index onto the PVC before the server pod starts. The server
+        # Deployment is a single container (no init container), so it expects the
+        # index to already be there -- see server-deployment.j2.
+        fetch_job = await workflow.execute_activity(
+            submit_qlever_index_fetch,
+            args=[kg_config, lakefs_action, pvc_storage_size],
+            start_to_close_timeout=timedelta(minutes=15),
+            retry_policy=NO_RETRY
+        )
+        if fetch_job:
+            await workflow.execute_activity(
+                watch_k8s_job_sync,
+                args=[fetch_job],
+                start_to_close_timeout=timedelta(hours=12),
+                heartbeat_timeout=timedelta(minutes=5),
+                retry_policy=NO_RETRY
+            )
 
         # Deploy QLever Server
         await workflow.execute_activity(

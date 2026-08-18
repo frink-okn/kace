@@ -16,31 +16,29 @@ spec:
         app: frink-{{ kg_name }}-qlever-server
         version: "{{ version }}"
     spec:
-      initContainers:
-      - name: fetch-index
-        image: peakcom/s5cmd:v2.2.2
-        command:
-        - /bin/sh
-        - -c
-        - |
-          mkdir -p /data/{{ kg_name }}/
-          /s5cmd --endpoint-url {{ lakefs_url }} cp "s3://{{ repository_id }}/{{ branch_id }}/qlever/*" /data/{{ kg_name }}/
-          chmod -R 777 /data/{{ kg_name }}
-        env:
-        - name: AWS_ACCESS_KEY_ID
-          value: "{{ lakefs_access_key }}"
-        - name: AWS_SECRET_ACCESS_KEY
-          value: "{{ lakefs_secret_key }}"
-        resources:
-          requests:
-             cpu: 1
-             memory: 1Gi
-          limits:
-             cpu: 1
-             memory: 1Gi
-        volumeMounts:
-        - name: data
-          mountPath: /data
+      # No initContainers. The index must already be on the PVC before this
+      # Deployment is created -- fetching it is now a separate step in KACE, not
+      # something every pod start repeats.
+      #
+      # Two reasons it moved out:
+      #
+      # 1. Cost. Kubernetes schedules, and GKE bills, a pod at
+      #        max( sum(containers), max(initContainers) )
+      #    so an init container larger than the app container is paid for over
+      #    the pod's whole life, not just while it runs. `fetch-index` sat at
+      #    exactly 2x the qlever-server container -- halve_sizing.py halved
+      #    `containers` and never touched `initContainers` -- so that resizing
+      #    saved $0. Across 36 of 41 KGs that was 15.2 vCPU + 99 GiB, ~$31/day.
+      #
+      # 2. Start time. `s5cmd cp` had no skip-if-present check, so every restart
+      #    re-downloaded the entire index. That makes a pod restart expensive and
+      #    scale-to-zero unworkable, because a cold start would mean refetching
+      #    the whole index before answering one query.
+      #
+      # Removing this from the template does NOT remove it from running
+      # Deployments: KACE patches (server_man.py:112, strategic merge), and a
+      # merge patch never deletes what it does not mention. Existing workloads
+      # need an explicit delete -- see cost-dashboard/strip_init_containers.py.
       containers:
       - name: qlever-server
         image: adfreiburg/qlever:latest

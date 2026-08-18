@@ -10,6 +10,7 @@ from .activities import (
     deploy_fuseki,
     deploy_ldf,
     deploy_qlever, # Added
+    submit_qlever_index_fetch,
     notify_slack,
     notify_email_deployed,
     resolve_commit_details,

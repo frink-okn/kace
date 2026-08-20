@@ -1,8 +1,10 @@
 import logging
 import shlex
 
+import secrets as _secrets
+
 import uvicorn
-from fastapi import FastAPI, Query, Body # Added Body
+from fastapi import FastAPI, Query, Body, Depends, Header, HTTPException # Added Body
 from models.lakefs_models import LakefsMergeActionModel, LakefTagCreationModel # Added LakefTagCreationModel
 from models.kg_metadata import KGConfig, KG # Added KG
 from config import config
@@ -11,10 +13,28 @@ from temporal_app.client import get_client
 from temporal_app.workflows.hdt_conversion import HDTConversionInput
 from temporalio.client import WorkflowExecutionStatus
 
+def require_token(x_kace_token: str = Header(None)) -> None:
+    """Shared-secret gate on every endpoint.
+
+    These endpoints are unauthenticated-by-default dangerous: they cancel running
+    workflows, start multi-day index builds, roll the public /federation endpoint
+    onto a caller-chosen build, and delete a repo's working files. LakeFS sends the
+    token via `properties.headers` in the action yaml (see README); operators
+    triggering by hand pass `-H "X-KACE-Token: ..."`.
+
+    Fail closed: an unconfigured token serves nothing rather than everything.
+    """
+    if not config.webhook_token:
+        raise HTTPException(status_code=503, detail="webhook auth not configured")
+    if not x_kace_token or not _secrets.compare_digest(x_kace_token, config.webhook_token):
+        raise HTTPException(status_code=401, detail="invalid or missing X-KACE-Token")
+
+
 app = FastAPI(
     title="KACE Temporal Webhook Server",
     description="Webhook receiver that triggers Temporal workflows for HDT and Neo4j conversions. "
-                "Enforces at-most-one-workflow-per-repo by cancelling any existing workflow before starting a new one."
+                "Enforces at-most-one-workflow-per-repo by cancelling any existing workflow before starting a new one.",
+    dependencies=[Depends(require_token)],
 )
 
 logger = logging.getLogger(__name__)

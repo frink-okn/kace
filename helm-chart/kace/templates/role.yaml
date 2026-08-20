@@ -97,6 +97,21 @@ rules:
     - patch
     - update
     - watch
+# KEDA owns the replica count of every per-KG QLever Deployment, so KACE has to
+# be able to create the HTTPScaledObject that says so when it provisions a KG.
+- apiGroups:
+    - "http.keda.sh"
+  resources:
+    - "httpscaledobjects"
+  verbs:
+    - create
+    - delete
+    - deletecollection
+    - get
+    - list
+    - patch
+    - update
+    - watch
 ---
 kind: RoleBinding
 apiVersion: rbac.authorization.k8s.io/v1

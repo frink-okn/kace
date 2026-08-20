@@ -10,51 +10,31 @@ is keyed by build_id so that:
 """
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional
-from kubernetes import client, config as k8s_config
+from kubernetes import client
 from kubernetes.client.rest import ApiException
 from config import config as app_config
+from k8s import clients
 
 
 def pvc_name(build_id: str) -> str:
     return f"{app_config.qlever_index_pvc_prefix}{build_id}"
 
 
-def _reload_k8s_auth():
-    # legacy no-op
-    pass
+# The build cluster allocates the PVC the indexer writes to; the serving cluster
+# allocates the one the federation server mounts. Same shape, same labels, two
+# clusters -- so every function here takes an explicit `cluster`.
+def _api(cluster: str = clients.LOCAL) -> client.CoreV1Api:
+    return clients.core_v1(cluster)
 
 
-_TOKEN_FILE = "/var/run/secrets/kubernetes.io/serviceaccount/token"
-
-
-def _fresh_api_client():
-    """See podman._fresh_api_client for rationale."""
-    cfg = client.Configuration()
-    k8s_config.load_incluster_config(client_configuration=cfg)
-    try:
-        with open(_TOKEN_FILE) as fh:
-            token = fh.read().strip()
-        if token:
-            cfg.api_key = {"authorization": f"bearer {token}"}
-            cfg.api_key_prefix = {}
-            api_client = client.ApiClient(configuration=cfg)
-            api_client.set_default_header("Authorization", f"Bearer {token}")
-            return api_client
-    except Exception:
-        pass
-    return client.ApiClient(configuration=cfg)
-
-
-def _api() -> client.CoreV1Api:
-    return client.CoreV1Api(api_client=_fresh_api_client())
-
-
-def create_index_pvc(build_id: str, image: str) -> str:
+def create_index_pvc(build_id: str, image: str, cluster: str = clients.LOCAL,
+                     storage_class: str = None) -> str:
     """Create the per-build output PVC. Idempotent: returns silently if it
     already exists. Annotates with the qlever image used so rollback can
     refuse to mount an index built by an incompatible binary."""
     name = pvc_name(build_id)
-    namespace = app_config.k8s_namespace
+    namespace = clients.namespace(cluster)
+    storage_class = storage_class or app_config.qlever_index_pvc_storage_class
     body = client.V1PersistentVolumeClaim(
         metadata=client.V1ObjectMeta(
             name=name,
@@ -70,13 +50,13 @@ def create_index_pvc(build_id: str, image: str) -> str:
         ),
         spec=client.V1PersistentVolumeClaimSpec(
             access_modes=["ReadWriteOnce"],
-            storage_class_name=app_config.qlever_index_pvc_storage_class,
+            storage_class_name=storage_class,
             resources=client.V1ResourceRequirements(
                 requests={"storage": app_config.qlever_index_pvc_size},
             ),
         ),
     )
-    api = _api()
+    api = _api(cluster)
     try:
         api.read_namespaced_persistent_volume_claim(name=name, namespace=namespace)
         return name
@@ -87,26 +67,26 @@ def create_index_pvc(build_id: str, image: str) -> str:
     return name
 
 
-def list_index_pvcs() -> List[str]:
+def list_index_pvcs(cluster: str = clients.LOCAL) -> List[str]:
     """All PVCs in the namespace that carry the qlever-index role label."""
-    namespace = app_config.k8s_namespace
-    resp = _api().list_namespaced_persistent_volume_claim(
+    namespace = clients.namespace(cluster)
+    resp = _api(cluster).list_namespaced_persistent_volume_claim(
         namespace=namespace,
         label_selector="kace.frink/role=qlever-index",
     )
     return [item.metadata.name for item in resp.items]
 
 
-def delete_pvc(name: str) -> None:
-    namespace = app_config.k8s_namespace
+def delete_pvc(name: str, cluster: str = clients.LOCAL) -> None:
+    namespace = clients.namespace(cluster)
     try:
-        _api().delete_namespaced_persistent_volume_claim(name=name, namespace=namespace)
+        _api(cluster).delete_namespaced_persistent_volume_claim(name=name, namespace=namespace)
     except ApiException as e:
         if e.status != 404:
             raise
 
 
-def gc_index_pvcs(state: Dict, now_iso: str) -> Dict[str, List[str]]:
+def gc_index_pvcs(state: Dict, now_iso: str, cluster: str = clients.LOCAL) -> Dict[str, List[str]]:
     """Delete output PVCs that should no longer exist.
 
     Deletes:
@@ -139,13 +119,13 @@ def gc_index_pvcs(state: Dict, now_iso: str) -> Dict[str, List[str]]:
             keep.add(previous_name)
 
     deleted, retained = [], []
-    for name in list_index_pvcs():
+    for name in list_index_pvcs(cluster):
         if not name.startswith(prefix):
             continue
         if name in keep:
             retained.append(name)
             continue
-        delete_pvc(name)
+        delete_pvc(name, cluster)
         deleted.append(name)
 
     return {

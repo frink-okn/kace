@@ -67,6 +67,21 @@ class Config(BaseModel):
     qlever_index_schedule_id: str
     qlever_index_schedule_cron: str
     qlever_index_schedule_timezone: str
+    # Shared secret required on every webhook request (X-KACE-Token).
+    webhook_token: str
+    # Remote (GKE) cluster access. Empty = single-cluster mode, everything local.
+    remote_kubeconfig: str
+    remote_kube_context: str
+    remote_namespace: str
+    # Bucket used to ship the finished federated index from the build cluster
+    # to the serving cluster (GCS via its S3-compatible endpoint).
+    qlever_index_bucket: str
+    qlever_index_bucket_endpoint: str
+    qlever_index_bucket_access_key: str
+    qlever_index_bucket_secret_key: str
+    # Storage class for the SERVING index PVC on the remote cluster;
+    # qlever_index_pvc_storage_class is the build cluster's.
+    qlever_index_serving_storage_class: str
 
 
 
@@ -133,4 +148,13 @@ config = Config(
     # Default: Friday 18:00 (after 5PM) — multi-day build (~1d17h) finishes well before Sunday night.
     qlever_index_schedule_cron=os.environ.get('QLEVER_INDEX_SCHEDULE_CRON', '0 18 * * 5'),
     qlever_index_schedule_timezone=os.environ.get('QLEVER_INDEX_SCHEDULE_TIMEZONE', 'UTC'),
+    webhook_token=os.environ.get('WEBHOOK_TOKEN', ''),
+    remote_kubeconfig=os.environ.get('REMOTE_KUBECONFIG', ''),
+    remote_kube_context=os.environ.get('REMOTE_KUBE_CONTEXT', ''),
+    remote_namespace=os.environ.get('REMOTE_NAMESPACE', ''),
+    qlever_index_bucket=os.environ.get('QLEVER_INDEX_BUCKET', ''),
+    qlever_index_bucket_endpoint=os.environ.get('QLEVER_INDEX_BUCKET_ENDPOINT', 'https://storage.googleapis.com'),
+    qlever_index_bucket_access_key=os.environ.get('QLEVER_INDEX_BUCKET_ACCESS_KEY', ''),
+    qlever_index_bucket_secret_key=os.environ.get('QLEVER_INDEX_BUCKET_SECRET_KEY', ''),
+    qlever_index_serving_storage_class=os.environ.get('QLEVER_INDEX_SERVING_STORAGE_CLASS', 'premium-rwo'),
 )

@@ -93,6 +93,41 @@ Per-repo input filters (gunzip pipe suffixes) and per-repo lakefs overrides (alt
 
 Consumes the index build's state: `resolve_qlever_federation_build_id` picks the PVC to serve — default `build_id_serving`, `use_previous=true` for n-1 rollback, explicit `build_id=` wins over both. `deploy_qlever_federation` then renders `templates/qlever-federation/*.j2` (via `qlever_federation_server_manager`) mounting that PVC into a qlever-server Deployment exposed at `/{config.qlever_federation_prefix}` (default `/federation`). Slack notified at start/success/failure.
 
+## Two-cluster mode (`src/k8s/clients.py`)
+
+KACE can run batch work on one cluster and manage the serving layer on another. Every k8s
+call passes a `cluster`: `clients.LOCAL` (shares a PVC with the worker process — conversion
+Jobs, the federated index build, `qlever_state`) or `clients.REMOTE` (what users query — the
+four `server_man*` managers, the per-KG qlever fetch Job, LDF, the serving index PVC).
+`clients.effective()` folds REMOTE into LOCAL whenever `REMOTE_KUBECONFIG` is unset, so
+single-cluster installs behave exactly as before — **always gate behavior on `effective()`,
+never on the raw argument**. `JobMan(cluster=...)` also drops the default `local_pvc_name`
+mount for remote Jobs. Activities `run_k8s_job` / `watch_k8s_job_sync` take `cluster` as
+their LAST parameter (workflows pass positionally; appending keeps histories replayable) —
+the watcher must be given the same value the submitter used.
+
+Grep gate after touching this layer: `grep -rn 'client\.\(Core\|Apps\|Batch\|Custom\|Networking\)[A-Za-z]*Api()' src`
+must return nothing. A missed site keeps working locally and fails only after cutover.
+
+**Index transfer**: an RWO PVC cannot span clusters, so `submit_qlever_index_upload` (build
+side, phase 6.5 of QLeverIndexWorkflow) pushes the finished index to `qlever_index_bucket`
+with a `{build_id}.complete` marker, and `submit_qlever_index_download` (serving side, inside
+QLeverFederationDeploymentWorkflow) pulls it onto the serving PVC before rollover. Both
+return `""` and are skipped when no bucket is configured. Remote PVC GC runs only when the
+deploy source is `serving` — GCing after a rollback would delete the PVC just mounted.
+
+Unsupported after a split: the Fuseki path (`download_hdt_files_activity` stages a PVC from
+inside the worker) and `_ldf_sync_image` pod introspection (set `ldf_sync_image`).
+
+## Webhook auth
+
+All endpoints sit behind `require_token` (`temporal_server.py`), an app-wide FastAPI
+dependency checking `X-KACE-Token` against `config.webhook_token` with
+`secrets.compare_digest`. No token configured = 503 for everything (fail closed). lakeFS
+sends it via `properties.headers` in the action yaml, reading `{{ ENV.LAKEFSACTIONS_KACE_TOKEN }}`
+— lakeFS blocks env vars without that prefix. New endpoints inherit the check automatically;
+do not add routes to a separate app or router without it.
+
 ## Key building blocks
 
 - **`src/k8s/`** — the only place that talks to the cluster. `podman.JobMan` submits Jobs from templates in `src/k8s/templates/*.yaml`; the `job_type` string passed to `run_k8s_job` selects the template via the `mapping` dict at the top of `podman.py` (`hdtc-job`, `nt-merge-job`, `qlever-index-job`, `neo4j-rdf-job`, `neo4j-json-job`, `spider-job`, `void-job`, `documentation-job`). Four deployment managers render Deployment/Service/Ingress/PVC manifests from Jinja dirs resolved in `src/k8s/__init__.py`: `server_man.py` (Fuseki — also reused for the old Fuseki-federation templates in `templates/federation/`), `server_man_ldf.py` (LDF aggregator), `server_man_qlever.py` (per-KG QLever), `server_man_qlever_federation.py` (federated QLever, `templates/qlever-federation/`). `qlever_state.py` (ConfigMap-backed state) and `qlever_pvc.py` (per-build output PVC lifecycle) backstop the federated index build.

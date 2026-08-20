@@ -7,15 +7,22 @@ from kubernetes import client, config
 from kubernetes.client.rest import ApiException
 from log_util import LoggingUtil
 from config import config as app_config
+from k8s import clients
 import time
 
 logger = LoggingUtil.init_logging("fuseki-k8s-man")
 
 
-config.load_incluster_config()
-
 class ServerDeploymentManager:
-    def __init__(self, templates_dir, namespace):
+    """Renders and applies the manifests for one kind of SPARQL server.
+
+    Serving objects live on the cluster users' queries reach, which is not
+    necessarily the cluster this process runs in -- hence `cluster`, defaulting
+    to REMOTE. In single-cluster mode clients.effective() folds that back to
+    local and nothing changes.
+    """
+
+    def __init__(self, templates_dir, namespace, cluster: str = clients.REMOTE):
         logger.info("Loading templates from {}".format(templates_dir))
         self.templates = Environment(
             loader=FileSystemLoader(templates_dir),
@@ -25,6 +32,22 @@ class ServerDeploymentManager:
         self.server_host_name = app_config.frink_address
         self.pvc_name = app_config.shared_pvc_name
         self.namespace = namespace
+        self.cluster = clients.effective(cluster)
+
+    def _core(self):
+        return clients.core_v1(self.cluster)
+
+    def _apps(self):
+        return clients.apps_v1(self.cluster)
+
+    def _batch(self):
+        return clients.batch_v1(self.cluster)
+
+    def _custom(self):
+        return clients.custom_objects(self.cluster)
+
+    def _net(self):
+        return clients.networking_v1(self.cluster)
 
     def get_config_map(self, parameters: Dict[str, Any]) -> Dict:
         config_map_template = self.templates.get_template("config-map.j2")
@@ -61,7 +84,7 @@ class ServerDeploymentManager:
 
     def create_or_update_configmap_k8s(self, parameters: Dict[str, Any], annotations: Dict[str, str] = None) -> None:
         config_map = self.get_config_map(parameters)
-        k8s_client = client.CoreV1Api()
+        k8s_client = self._core()
         config_map_name = config_map["metadata"]["name"]
         raw_annotations = config_map["metadata"].get("annotations", {})
         if annotations:
@@ -78,7 +101,7 @@ class ServerDeploymentManager:
 
     def create_or_update_service(self, parameters: Dict[str, Any], annotations: Dict[str, str] = None) -> None:
         service_body = self.get_service(parameters)
-        k8s_client = client.CoreV1Api()
+        k8s_client = self._core()
         service_name = service_body["metadata"]["name"]
         if annotations:
             raw_annotations = service_body["metadata"].get("annotations", {})
@@ -106,7 +129,7 @@ class ServerDeploymentManager:
         # update resource
         if resources:
             deployment_body["spec"]["template"]["spec"]["containers"][0]["resources"] = resources
-        k8s_client = client.AppsV1Api()
+        k8s_client = self._apps()
         try:
             k8s_client.read_namespaced_deployment(name=deployment_name, namespace=self.namespace)
             k8s_client.patch_namespaced_deployment(name=deployment_name, namespace=self.namespace, body=deployment_body)
@@ -125,7 +148,7 @@ class ServerDeploymentManager:
             raw_annotations.update(annotations)
             httproute_body["metadata"]["annotations"] = raw_annotations
 
-        k8s_client = client.CustomObjectsApi()
+        k8s_client = self._custom()
         group = "gateway.networking.k8s.io"
         version = "v1beta1"
         plural = "httproutes"
@@ -152,7 +175,7 @@ class ServerDeploymentManager:
             raw_annotations = ingress_body["metadata"].get("annotations", {})
             raw_annotations.update(annotations)
             ingress_body["metadata"]["annotations"] = raw_annotations
-        k8s_client = client.NetworkingV1Api()
+        k8s_client = self._net()
         try:
             k8s_client.read_namespaced_ingress(name=ingress_name, namespace=self.namespace)
             k8s_client.patch_namespaced_ingress(name=ingress_name, namespace=self.namespace, body=ingress_body)
@@ -172,7 +195,7 @@ class ServerDeploymentManager:
             raw_annotations.update(annotations)
             healthcheck_body["metadata"]["annotations"] = raw_annotations
 
-        k8s_client = client.CustomObjectsApi()
+        k8s_client = self._custom()
         group = "networking.gke.io"
         version = "v1"
         plural = "healthcheckpolicies"
@@ -207,7 +230,7 @@ class ServerDeploymentManager:
                                          resources=resources)
 
     def delete_configmap_k8s(self, parameters: Dict[str, Any]) -> None:
-        api = client.CoreV1Api()
+        api = self._core()
         config_map_body = self.get_config_map(parameters)
         config_map_name = config_map_body["metadata"]["name"]
         logger.info(f"Deleting configmap : {config_map_name}")
@@ -220,7 +243,7 @@ class ServerDeploymentManager:
                 raise e
 
     def delete_service_k8s(self, parameters: Dict[str, Any]) -> None:
-        api = client.CoreV1Api()
+        api = self._core()
         service_body = self.get_service(parameters)
         service_name = service_body["metadata"]["name"]
         logger.info(f"Deleting service : {service_name}")
@@ -233,7 +256,7 @@ class ServerDeploymentManager:
                 raise e
 
     def delete_deployment_k8s(self, parameters: Dict[str, Any]) -> None:
-        api = client.AppsV1Api()
+        api = self._apps()
         deployment_body = self.get_deployment(parameters)
         deployment_name = deployment_body["metadata"]["name"]
         logger.info(f"Deleting  deployment : {deployment_name}")
@@ -246,7 +269,7 @@ class ServerDeploymentManager:
                 raise e
 
     def delete_httproute_k8s(self, parameters: Dict[str, Any]) -> None:
-        api = client.CustomObjectsApi()
+        api = self._custom()
         httproute_body = self.get_httproute(parameters)
         httproute_name = httproute_body["metadata"]["name"]
         logger.info(f"Deleting httproute : {httproute_name}")
@@ -264,7 +287,7 @@ class ServerDeploymentManager:
                 raise e
 
     def delete_ingress_k8s(self, parameters: Dict[str, Any]) -> None:
-        api = client.NetworkingV1Api()
+        api = self._net()
         ingress_body = self.get_ingress(parameters)
         ingress_name = ingress_body["metadata"]["name"]
         logger.info(f"Deleting ingress : {ingress_name}")
@@ -277,7 +300,7 @@ class ServerDeploymentManager:
                 raise e
 
     def delete_healthcheck_k8s(self, parameters: Dict[str, Any]) -> None:
-        api = client.CustomObjectsApi()
+        api = self._custom()
         healthcheck_body = self.get_healthcheck(parameters)
         healthcheck_name = healthcheck_body["metadata"]["name"]
         logger.info(f"Deleting healthcheck : {healthcheck_name}")
@@ -308,7 +331,7 @@ class ServerDeploymentManager:
         """
         Check if the specified service is running by querying its status.
         """
-        k8s_client = client.CoreV1Api()
+        k8s_client = self._core()
         try:
             service_status = k8s_client.read_namespaced_service(name=service_name, namespace=self.namespace)
             for a in annotations:
@@ -327,7 +350,7 @@ class ServerDeploymentManager:
         """
         Check if the specified deployment is running by querying its status.
         """
-        k8s_client = client.AppsV1Api()
+        k8s_client = self._apps()
         try:
             deployment_status = k8s_client.read_namespaced_deployment(name=deployment_name,
                                                                              namespace=self.namespace)
@@ -349,7 +372,7 @@ class ServerDeploymentManager:
         """
         Check if the specified pod is running by querying its status.
         """
-        k8s_client = client.CoreV1Api()
+        k8s_client = self._core()
         try:
             pod_status = k8s_client.read_namespaced_pod(name=pod_name, namespace=self.namespace)
             # A pod is considered running if its phase is "Running"

@@ -41,7 +41,7 @@ class QLeverDeploymentWorkflow:
         if fetch_job:
             await workflow.execute_activity(
                 watch_k8s_job_sync,
-                args=[fetch_job],
+                args=[fetch_job, 5, "remote"],
                 start_to_close_timeout=timedelta(hours=12),
                 heartbeat_timeout=timedelta(minutes=5),
                 retry_policy=NO_RETRY

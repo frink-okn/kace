@@ -24,6 +24,53 @@ mapping = {
     ## add other pods here
 }
 
+def attach_extra_pvcs(pod_template, extra_pvcs, volume_mounts):
+    """Add the extra PVCs to a pod spec, one volume per CLAIM.
+
+    A pod that names the same claim through two volumes wedges kubelet on some
+    CSI drivers: the sandbox never completes, the pod sits in ContainerCreating
+    indefinitely, and no event says why. KACE hits this whenever
+    local_pvc_name == shared_pvc_name (a single-volume install), because the
+    default /mnt/repo mount and an extra_pvc then name the same PVC.
+
+    One volume can back many mounts, so an already-mounted claim is reused.
+    """
+    existing_volumes = {vol.name for vol in pod_template.volumes or []}
+    claim_to_volume = {
+        vol.persistent_volume_claim.claim_name: vol.name
+        for vol in (pod_template.volumes or [])
+        if vol.persistent_volume_claim
+    }
+    for spec in extra_pvcs:
+        vol_name   = spec["name"]
+        claim_name = spec["claim"]
+        if claim_name in claim_to_volume:
+            existing = claim_to_volume[claim_name]
+            if existing != vol_name:
+                logger.info(
+                    f"claim {claim_name} is already mounted as volume '{existing}'; "
+                    f"reusing it for {spec['mount_path']} rather than declaring a "
+                    f"second volume for the same claim"
+                )
+            vol_name = existing
+        elif vol_name not in existing_volumes:
+            pod_template.volumes = (pod_template.volumes or []) + [
+                client.V1Volume(
+                    name=vol_name,
+                    persistent_volume_claim=client.V1PersistentVolumeClaimVolumeSource(
+                        claim_name=claim_name
+                    ),
+                )
+            ]
+            existing_volumes.add(vol_name)
+            claim_to_volume[claim_name] = vol_name
+        volume_mounts.append(client.V1VolumeMount(
+            name=vol_name,
+            mount_path=spec["mount_path"],
+            read_only=bool(spec.get("read_only", False)),
+        ))
+    return pod_template, volume_mounts
+
 class JobMan:
     def __init__(self, cluster: str = clients.LOCAL):
         self.job_configs = {}
@@ -228,27 +275,7 @@ class JobMan:
                 ))
 
         if extra_pvcs:
-            existing_volumes = {vol.name for vol in pod_template.volumes or []}
-            for spec in extra_pvcs:
-                vol_name   = spec["name"]
-                claim_name = spec["claim"]
-                mount_path = spec["mount_path"]
-                read_only  = bool(spec.get("read_only", False))
-                if vol_name not in existing_volumes:
-                    pod_template.volumes = (pod_template.volumes or []) + [
-                        client.V1Volume(
-                            name=vol_name,
-                            persistent_volume_claim=client.V1PersistentVolumeClaimVolumeSource(
-                                claim_name=claim_name
-                            ),
-                        )
-                    ]
-                    existing_volumes.add(vol_name)
-                volume_mounts.append(client.V1VolumeMount(
-                    name=vol_name,
-                    mount_path=mount_path,
-                    read_only=read_only,
-                ))
+            attach_extra_pvcs(pod_template, extra_pvcs, volume_mounts)
 
         # De-duplicate mounts by mount_path just in case
         unique_mounts = {vm.mount_path: vm for vm in volume_mounts}

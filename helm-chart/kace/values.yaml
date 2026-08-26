@@ -65,6 +65,14 @@ webhookToken:
 remoteCluster:
   secretName: ""
 
+# Does THIS install create the SPARQL serving objects (HTTPRoute, GKE
+# HealthCheckPolicy/GCPBackendPolicy, KEDA HTTPScaledObject) in its own
+# namespace? True for a single-cluster install and for the serving cluster.
+# Set false on a batch-only cluster: those CRDs are not installed there, and
+# Kubernetes rejects a Role granting permissions the installer does not hold.
+rbac:
+  serving: true
+
 # HMAC credentials for qlever_index_bucket. Kept in a Secret rather than
 # app_config for the same reason as the webhook token: app_config renders as
 # plaintext env in the pod spec.
@@ -172,6 +180,22 @@ temporal_pg:
 command:
   entry: "server:app"
 app_config:
+  # Conversion memory derivation, when an action states only `memory`:
+  #   hdtc   --memory-limit  = memory * hdtc_memory_fraction  (floor 2GiB)
+  #   qlever --stxxl-memory  = memory * stxxl_memory_fraction
+  # Both flags are SOFT budgets for internal buffers, not caps on RSS, so
+  # neither can sit at parity with the pod: hdtc at 93% of its pod was
+  # OOMKilled. QLever's real need is numBlocks * numColumns * 500kB -- a
+  # property of the data, not the pod -- so its fraction is only a proxy; raise
+  # it when a build reports "Insufficient memory for merging N blocks".
+  hdtc_memory_fraction: "0.75"
+  stxxl_memory_fraction: "0.5"
+
+  # Serve every endpoint under this path prefix (e.g. "/kace" -> POST
+  # /kace/convert_to_hdt). The app mounts itself there, so an ingress can route
+  # by plain path with no rewrite annotations. Empty = served at the root.
+  webhook_path_prefix: ""
+
   lakefs_url: "http://lakefs"
   lakefs_access_key: ""
   lakefs_secret_key: ""
@@ -235,6 +259,11 @@ app_config:
   qlever_federation_extra_args: ""
   # Weekly QLever index build schedule (Temporal Schedule, upserted on worker boot).
   # Default fires Friday 18:00 UTC; ~1d17h build finishes before Sunday night.
+  # A finished index build normally kicks the federation server rollover. Set
+  # false where the index is built but served elsewhere and the transfer/remote
+  # credentials are not wired up yet -- otherwise the rollover tries to create
+  # serving objects on the build cluster.
+  qlever_federation_rollover_enabled: "true"
   qlever_index_schedule_enabled: "true"
   qlever_index_schedule_id: "qlever-index-weekly"
   qlever_index_schedule_cron: "0 18 * * 5"

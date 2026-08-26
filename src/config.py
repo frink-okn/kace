@@ -63,12 +63,22 @@ class Config(BaseModel):
     qlever_federation_index_basename: str
     qlever_federation_prefix: str
     qlever_federation_extra_args: list[str]
+    # Whether a finished index build kicks the federation server rollover.
+    # False on a build-only cluster that has nowhere to serve it from.
+    qlever_federation_rollover_enabled: bool
     qlever_index_schedule_enabled: bool
     qlever_index_schedule_id: str
     qlever_index_schedule_cron: str
     qlever_index_schedule_timezone: str
+    # Conversion memory derivation, applied when a webhook states only the pod
+    # size. Both consumers get a fraction of the pod because both flags are
+    # SOFT budgets for internal buffers, not caps on RSS.
+    hdtc_memory_fraction: float
+    stxxl_memory_fraction: float
     # Shared secret required on every webhook request (X-KACE-Token).
     webhook_token: str
+    # Serve every endpoint under this path prefix (e.g. "/kace"). Empty = root.
+    webhook_path_prefix: str
     # Remote (GKE) cluster access. Empty = single-cluster mode, everything local.
     remote_kubeconfig: str
     remote_kube_context: str
@@ -143,12 +153,16 @@ config = Config(
     qlever_federation_index_basename=os.environ.get('QLEVER_FEDERATION_INDEX_BASENAME', 'frink'),
     qlever_federation_prefix=os.environ.get('QLEVER_FEDERATION_PREFIX', 'federation'),
     qlever_federation_extra_args=[a.strip() for a in os.environ.get('QLEVER_FEDERATION_EXTRA_ARGS', '').split(',') if a.strip()],
+    qlever_federation_rollover_enabled=os.environ.get('QLEVER_FEDERATION_ROLLOVER_ENABLED', 'true').lower() == 'true',
     qlever_index_schedule_enabled=os.environ.get('QLEVER_INDEX_SCHEDULE_ENABLED', 'true').lower() == 'true',
     qlever_index_schedule_id=os.environ.get('QLEVER_INDEX_SCHEDULE_ID', 'qlever-index-weekly'),
     # Default: Friday 18:00 (after 5PM) — multi-day build (~1d17h) finishes well before Sunday night.
     qlever_index_schedule_cron=os.environ.get('QLEVER_INDEX_SCHEDULE_CRON', '0 18 * * 5'),
     qlever_index_schedule_timezone=os.environ.get('QLEVER_INDEX_SCHEDULE_TIMEZONE', 'UTC'),
+    hdtc_memory_fraction=float(os.environ.get('HDTC_MEMORY_FRACTION', '0.75')),
+    stxxl_memory_fraction=float(os.environ.get('STXXL_MEMORY_FRACTION', '0.5')),
     webhook_token=os.environ.get('WEBHOOK_TOKEN', ''),
+    webhook_path_prefix=os.environ.get('WEBHOOK_PATH_PREFIX', '').rstrip('/'),
     remote_kubeconfig=os.environ.get('REMOTE_KUBECONFIG', ''),
     remote_kube_context=os.environ.get('REMOTE_KUBE_CONTEXT', ''),
     remote_namespace=os.environ.get('REMOTE_NAMESPACE', ''),

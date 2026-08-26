@@ -16,6 +16,7 @@ import asyncio
 from datetime import timedelta
 from temporalio import workflow
 from temporalio.common import RetryPolicy, WorkflowIDReusePolicy
+from temporalio.exceptions import ApplicationError
 
 with workflow.unsafe.imports_passed_through():
     from ..activities import (
@@ -54,6 +55,18 @@ UPLOAD_WATCH_TIMEOUT = timedelta(days=1)
 HEARTBEAT_TIMEOUT   = timedelta(minutes=5)
 
 NO_RETRY = RetryPolicy(maximum_attempts=1)
+# Watching a K8s Job is pure polling, so it is safe to re-attach. This matters
+# because the watcher heartbeats precisely so a multi-day build can outlive a
+# worker restart -- but with maximum_attempts=1 a heartbeat timeout is terminal,
+# and a routine `rollout restart` kills the workflow instead. Terminal outcomes
+# (Job failed, Job missing) are raised non-retryable by the activity, so this
+# only retries the act of watching.
+WATCH_RETRY = RetryPolicy(
+    initial_interval=timedelta(seconds=10),
+    backoff_coefficient=2.0,
+    maximum_interval=timedelta(minutes=1),
+    maximum_attempts=20,
+)
 # Downloads are now resumable-on-retry only in the sense that the activity
 # re-runs from scratch; per-part retries inside the activity handle transient
 # transport errors. Limit Temporal-level retries so a truly bad object does
@@ -138,6 +151,23 @@ class QLeverIndexWorkflow:
                 start_to_close_timeout=QUICK_TIMEOUT,
                 retry_policy=NO_RETRY,
             )
+
+        # An empty source set means the run would invoke IndexBuilderMain with
+        # no -f arguments, which fails deep inside QLever with
+        # `!config.inputFiles_.empty()` after the PVC and Job already exist.
+        # Nearly always a subset filter that matched nothing.
+        if not refs["kg_refs"]:
+            detail = f" (subset: {', '.join(only_kg)})" if only_kg else ""
+            msg = (
+                f"❌ QLever federated index build {build_id}: no source repos "
+                f"resolved{detail}. Nothing to index -- check the subset names "
+                f"against the registry (shortname or lakefs repo id both work)."
+            )
+            await workflow.execute_activity(
+                notify_slack, args=[msg],
+                start_to_close_timeout=QUICK_TIMEOUT, retry_policy=NO_RETRY,
+            )
+            raise ApplicationError(msg, non_retryable=True)
 
         # ── Phase 2: change detection ─────────────────────────────────────
         current_commits = {
@@ -253,7 +283,7 @@ class QLeverIndexWorkflow:
             args=[job_name],
             start_to_close_timeout=BUILD_WATCH_TIMEOUT,
             heartbeat_timeout=HEARTBEAT_TIMEOUT,
-            retry_policy=NO_RETRY,
+            retry_policy=WATCH_RETRY,
         )
 
         # ── Phase 6.5: ship the index to the serving cluster ──────────────
@@ -273,7 +303,7 @@ class QLeverIndexWorkflow:
                 args=[upload_job],
                 start_to_close_timeout=UPLOAD_WATCH_TIMEOUT,
                 heartbeat_timeout=HEARTBEAT_TIMEOUT,
-                retry_policy=NO_RETRY,
+                retry_policy=WATCH_RETRY,
             )
 
         # ── Phase 7: write new state ──────────────────────────────────────
@@ -307,6 +337,19 @@ class QLeverIndexWorkflow:
         # TERMINATE_IF_RUNNING so a stale rollover from a prior build is
         # superseded by the fresh one (matches the single-flight contract
         # also enforced by the /trigger_qlever_federation_deploy endpoint).
+        if not app_config.qlever_federation_rollover_enabled:
+            workflow.logger.info(
+                "Federation rollover disabled; index build ends at 'PVC populated'."
+            )
+            return {
+                "status":         "built",
+                "build_id":       build_id,
+                "pvc":            pvc_name,
+                "gc_report":      gc_report,
+                "previous_build": old_serving,
+                "rollover":       "disabled",
+            }
+
         await workflow.start_child_workflow(
             "QLeverFederationDeploymentWorkflow",
             args=[False, None],

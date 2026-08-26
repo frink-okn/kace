@@ -1,7 +1,9 @@
 from temporalio import workflow
 from datetime import timedelta
+import re
 from dataclasses import dataclass
 with workflow.unsafe.imports_passed_through():
+    import memory_sizing
     from ..activities import (
         run_k8s_job,
         watch_k8s_job_sync,
@@ -27,7 +29,26 @@ LONG_RUNNING_JOB_TIMEOUT = timedelta(hours=42)
 # Fail immediately on first error, no retries
 from temporalio.common import RetryPolicy
 from temporalio.exceptions import ApplicationError
+# Uploading conversion output back to lakeFS. Sized for a cross-WAN transfer of
+# a multi-GB HDT; the heartbeat is what actually detects a stuck worker.
+UPLOAD_TIMEOUT = timedelta(hours=24)
+UPLOAD_HEARTBEAT_TIMEOUT = timedelta(minutes=10)
+# Job watchers poll every 5s and heartbeat each time.
+WATCH_HEARTBEAT_TIMEOUT = timedelta(minutes=5)
+
 NO_RETRY = RetryPolicy(maximum_attempts=1)
+# Watching a K8s Job is pure polling, so it is safe to re-attach. This matters
+# because the watcher heartbeats precisely so a multi-day build can outlive a
+# worker restart -- but with maximum_attempts=1 a heartbeat timeout is terminal,
+# and a routine `rollout restart` kills the workflow instead. Terminal outcomes
+# (Job failed, Job missing) are raised non-retryable by the activity, so this
+# only retries the act of watching.
+WATCH_RETRY = RetryPolicy(
+    initial_interval=timedelta(seconds=10),
+    backoff_coefficient=2.0,
+    maximum_interval=timedelta(minutes=1),
+    maximum_attempts=20,
+)
 
 # Skip output directories from previous runs to avoid re-merging them
 OUTPUT_PREFIXES = ['qlever/', 'hdt/', 'nt/', 'void/']
@@ -47,6 +68,11 @@ class HDTConversionInput:
     exclude_files: list | None = None
     exclude_known_extension: list | None = None
     files_list: list | None = None
+    # QLever's sort buffer. Separate from program_memory because the two size
+    # different things: program_memory bounds hdtc's buffers, this bounds the
+    # index build's external sorter. Both are derived from pod_memory by the
+    # endpoint; empty here means "derive it" for direct starts.
+    stxxl_memory: str = ""
 
 
 @workflow.defn
@@ -56,6 +82,10 @@ class HDTConversionWorkflow:
         # All run inputs live on self.input; derived values are computed onto self below.
         self.input = input
         action_payload = input.action_payload
+        # Derived here too: the workflow can be started directly (trigger_test,
+        # or the neo4j parent) without passing through the endpoint that
+        # normally computes it. Pod memory is the only input.
+        self.stxxl_memory = input.stxxl_memory or memory_sizing.stxxl_budget(input.pod_memory)
 
         self.repo_id = action_payload['repository_id']
         self.branch_id = action_payload['branch_id']
@@ -139,7 +169,11 @@ class HDTConversionWorkflow:
             watch_k8s_job_sync,
             args=[job_name],
             start_to_close_timeout=watch_timeout,
-            retry_policy=NO_RETRY,
+            # Without this, a worker that dies mid-watch is only noticed when
+            # start_to_close expires -- up to 42h for a conversion job. The
+            # watcher heartbeats every poll, so minutes is the right scale.
+            heartbeat_timeout=WATCH_HEARTBEAT_TIMEOUT,
+            retry_policy=WATCH_RETRY,
         )
 
     async def _download_inputs(self, files_list, exclude_files, exclude_known_extension) -> list[str]:
@@ -340,7 +374,7 @@ class HDTConversionWorkflow:
             f"{unzip_stream}"
             f"-g {self.dataset_uri} -F nt "
             f"-f {self.working_dir}/hdt/void.nt "
-            f"-g {self.dataset_uri}#void -F nt  --stxxl-memory {self.input.program_memory} "
+            f"-g {self.dataset_uri}#void -F nt  --stxxl-memory {self.stxxl_memory} "
         )
 
         await workflow.execute_activity(
@@ -355,7 +389,7 @@ class HDTConversionWorkflow:
             job_name=qlever_job_name,
             command=["bash"],
             args=["-c", qlever_cmd],
-            env_vars={"STXXL_MEMORY": f"{self.input.program_memory}"},
+            env_vars={"STXXL_MEMORY": f"{self.stxxl_memory}"},
             watch_timeout=LONG_RUNNING_JOB_TIMEOUT,
         )
 
@@ -397,7 +431,11 @@ class HDTConversionWorkflow:
         upload_result = await workflow.execute_activity(
             upload_output_files,
             args=[self.repo_id, self.branch_id, local_files],
-            start_to_close_timeout=timedelta(hours=2),
+            # lakeFS may be across a WAN, so a multi-GB graph.hdt can take far
+            # longer than the old 2h cap allowed. The activity heartbeats per
+            # chunk, so a dead worker is still caught in minutes.
+            start_to_close_timeout=UPLOAD_TIMEOUT,
+            heartbeat_timeout=UPLOAD_HEARTBEAT_TIMEOUT,
             retry_policy=NO_RETRY,
         )
 
@@ -408,7 +446,8 @@ class HDTConversionWorkflow:
         upload_void = await workflow.execute_activity(
             upload_output_files,
             args=[void_repo, self.branch_id, files],
-            start_to_close_timeout=timedelta(hours=2),
+            start_to_close_timeout=UPLOAD_TIMEOUT,
+            heartbeat_timeout=UPLOAD_HEARTBEAT_TIMEOUT,
             retry_policy=NO_RETRY,
         )
 

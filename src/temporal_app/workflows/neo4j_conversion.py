@@ -2,6 +2,7 @@ from temporalio import workflow
 from datetime import timedelta
 
 with workflow.unsafe.imports_passed_through():
+    import memory_sizing
     from ..activities import (
         run_k8s_job,
         watch_k8s_job_sync,
@@ -18,15 +19,33 @@ LONG_RUNNING_JOB_TIMEOUT = timedelta(hours=42)
 
 from temporalio.common import RetryPolicy
 NO_RETRY = RetryPolicy(maximum_attempts=1)
+# Watching a K8s Job is pure polling, so it is safe to re-attach. This matters
+# because the watcher heartbeats precisely so a multi-day build can outlive a
+# worker restart -- but with maximum_attempts=1 a heartbeat timeout is terminal,
+# and a routine `rollout restart` kills the workflow instead. Terminal outcomes
+# (Job failed, Job missing) are raised non-retryable by the activity, so this
+# only retries the act of watching.
+# Job watchers poll every 5s and heartbeat each time, so a dead worker
+# shows up in minutes rather than at start_to_close.
+WATCH_HEARTBEAT_TIMEOUT = timedelta(minutes=5)
+WATCH_RETRY = RetryPolicy(
+    initial_interval=timedelta(seconds=10),
+    backoff_coefficient=2.0,
+    maximum_interval=timedelta(minutes=1),
+    maximum_attempts=20,
+)
 
 @workflow.defn
 class Neo4jConversionWorkflow:
     @workflow.run
     async def run(self, action_payload: dict, rdf_mapping_config: str = None,
                   cpu: int = 1, memory: str = "28Gi", ephemeral: str = "512Mi",
-                  java_opts: str = "-Xmx25G -Xms25G -Xss512m -XX:+UseParallelGC",) -> None:
+                  java_opts: str = "",
+                  program_memory: str = "", stxxl_memory: str = "") -> None:
         repo_id = action_payload['repository_id']
         branch_id = action_payload['branch_id']
+        # Heap follows the pod as well; the endpoint normally passes this in.
+        java_opts = java_opts or memory_sizing.jvm_opts(memory)
 
         workflow.logger.info(f"Starting Neo4jConversionWorkflow for {repo_id}")
 
@@ -87,7 +106,8 @@ class Neo4jConversionWorkflow:
                 watch_k8s_job_sync,
                 args=[json_job_name],
                 start_to_close_timeout=LONG_RUNNING_JOB_TIMEOUT,
-                retry_policy=NO_RETRY
+                heartbeat_timeout=WATCH_HEARTBEAT_TIMEOUT,
+                retry_policy=WATCH_RETRY
             )
             source_files = "neo4j-export/neo4j-apoc-export.json"
         else:
@@ -122,7 +142,8 @@ class Neo4jConversionWorkflow:
             watch_k8s_job_sync,
             args=[rdf_job_name],
             start_to_close_timeout=LONG_RUNNING_JOB_TIMEOUT,
-            retry_policy=NO_RETRY
+            heartbeat_timeout=WATCH_HEARTBEAT_TIMEOUT,
+            retry_policy=WATCH_RETRY
         )
 
         # 6. Notify Neo4j conversion complete
@@ -144,11 +165,14 @@ class Neo4jConversionWorkflow:
             HDTConversionInput(
                 action_payload=action_payload,
                 doc_path=kg_config.frink_options.documentation_path,
-                cpu=1,
-                pod_memory="28Gi",
-                ephemeral="512Mi",
-                java_opts="-Xmx25G -Xms25G -Xss512m -XX:+UseParallelGC",
-                program_memory="25G",
+                cpu=cpu,
+                pod_memory=memory,
+                ephemeral=ephemeral,
+                java_opts=java_opts,
+                # Was hardcoded at 25G against a 28Gi pod (89%) -- the same
+                # ratio that got the hdtc job OOMKilled on the babel run.
+                program_memory=program_memory or memory_sizing.hdtc_budget(memory),
+                stxxl_memory=stxxl_memory or memory_sizing.stxxl_budget(memory),
                 convert_to_hdt=True,
                 hdt_path="/",
                 files_list=nt_files,  # triggers skip of download

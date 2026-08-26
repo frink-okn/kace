@@ -180,6 +180,11 @@ QLEVER_SOCK_READ_SECS = int(os.environ.get("LAKEFS_QLEVER_SOCK_READ", "120"))
 # silently no-ops outside a temporal activity context.
 _HEARTBEAT_INTERVAL_SECS = 30
 
+# Upload tuning. lakeFS is across a WAN from the build cluster, so the transfer
+# is long and the connection is not always stable.
+UPLOAD_SOCK_READ_SECS = int(os.environ.get("LAKEFS_UPLOAD_SOCK_READ_SECS", "600"))
+UPLOAD_MAX_ATTEMPTS = int(os.environ.get("LAKEFS_UPLOAD_ATTEMPTS", "3"))
+
 
 def _activity_heartbeat(detail: dict) -> None:
     try:
@@ -239,7 +244,17 @@ async def download_file(file_name, repo, branch, download_path,
         os.ftruncate(fd, size)
         part_size = (size + parts - 1) // parts
 
-        max_attempts = 5
+        # Budget retries by LACK OF PROGRESS, not by attempt count. Every retry
+        # resumes from the byte offset already written, so a long transfer over
+        # a WAN -- where the peer truncates the response every couple of GB --
+        # makes progress on each attempt and would otherwise exhaust a fixed
+        # budget purely for being large. A 34GB part cut every ~1.8GB needs ~19
+        # attempts and is perfectly healthy; a stream that delivers zero bytes
+        # `max_stalls` times in a row is genuinely stuck.
+        max_stalls  = int(os.environ.get("LAKEFS_DOWNLOAD_STALLS", "5"))
+        # Backstop so a pathological peer (progress of a few bytes per attempt)
+        # cannot loop forever.
+        hard_cap    = int(os.environ.get("LAKEFS_DOWNLOAD_MAX_ATTEMPTS", "200"))
         base_delay   = 2
         loop = asyncio.get_event_loop()
 
@@ -250,9 +265,11 @@ async def download_file(file_name, repo, branch, download_path,
                 return
             offset = start  # advances across retries — never re-download bytes already pwritten
             last_hb = loop.time()
-            for attempt in range(1, max_attempts + 1):
+            stalls = 0      # consecutive attempts that transferred nothing
+            for attempt in range(1, hard_cap + 1):
                 if offset > end:
                     return
+                attempt_start_offset = offset
                 headers = {'Accept-Encoding': 'identity', 'Range': f'bytes={offset}-{end}'}
                 try:
                     async with session.get(file_url, headers=headers) as resp:
@@ -276,12 +293,20 @@ async def download_file(file_name, repo, branch, download_path,
                                 last_hb = now
                     return
                 except (asyncio.TimeoutError, aiohttp.ClientError, OSError) as e:
-                    if attempt >= max_attempts:
-                        logger.error(f"part {i} {file_name}: giving up after {attempt} attempts at offset {offset}: {e}")
+                    stalls = 0 if offset > attempt_start_offset else stalls + 1
+                    if stalls >= max_stalls:
+                        logger.error(
+                            f"part {i} {file_name}: giving up after {stalls} attempts with no progress "
+                            f"at offset {offset}: {e}"
+                        )
                         raise
-                    delay = base_delay * (2 ** (attempt - 1))
+                    if attempt >= hard_cap:
+                        logger.error(f"part {i} {file_name}: hit hard cap of {hard_cap} attempts at offset {offset}: {e}")
+                        raise
+                    delay = base_delay * (2 ** min(stalls, 5))
                     logger.warning(
                         f"part {i} {file_name}: attempt {attempt} failed ({type(e).__name__}: {e}), "
+                        f"progressed {offset - attempt_start_offset} bytes, stalls={stalls}, "
                         f"retry in {delay}s (resuming from offset {offset})"
                     )
                     _activity_heartbeat({
@@ -517,31 +542,64 @@ async def upload_files(repo: str, root_branch: str = "main", local_files: list[t
     # push local files.
     login_cookie = await login_and_get_cookies(config.lakefs_url, config.lakefs_access_key, config.lakefs_secret_key)
 
+    # No total timeout: a multi-GB object over a WAN cannot fit in aiohttp's
+    # 5-minute default, which is what killed the babel upload. Bound the
+    # *inactivity* instead, so a genuinely dead socket still fails fast.
+    timeout = aiohttp.ClientTimeout(total=None, sock_connect=60, sock_read=UPLOAD_SOCK_READ_SECS)
+
     for file, remote_path in local_files:
-        async with aiohttp.ClientSession(cookies=login_cookie) as session:
-            stream = await open_file_with_retry(file, mode='rb')
-            with stream:
-                # chunk generator
-                async def file_chunks():
-                    while True:
-                        chunk = stream.read(1024 * 1024)  # 1 MB chunk size
-                        if not chunk:
-                            break
-                        yield chunk
+        path = remote_path + '/' + os.path.basename(file)
+        url = (f'{config.lakefs_url}/api/v1/repositories/{urllib.parse.quote_plus(repo)}/branches/'
+               f'{urllib.parse.quote_plus(stable_branch_name)}'
+               f'/objects?path={urllib.parse.quote_plus(path)}')
+        size = os.path.getsize(file) if os.path.exists(file) else None
+        logger.info(f"Uploading {file} ({size} bytes) -> {url}")
 
-                path = remote_path + '/' + os.path.basename(file)
+        # Unlike the download path, this API takes one object per POST, so a
+        # failure restarts that file -- there is no offset to resume from.
+        # Retries are therefore few and only for transport-level errors.
+        for attempt in range(1, UPLOAD_MAX_ATTEMPTS + 1):
+            try:
+                async with aiohttp.ClientSession(cookies=login_cookie, timeout=timeout) as session:
+                    stream = await open_file_with_retry(file, mode='rb')
+                    with stream:
+                        sent = 0
+                        last_hb = asyncio.get_event_loop().time()
 
-                url = (f'{config.lakefs_url}/api/v1/repositories/{urllib.parse.quote_plus(repo)}/branches/'
-                       f'{urllib.parse.quote_plus(stable_branch_name)}'
-                       f'/objects?path={urllib.parse.quote_plus(path)}')
-                logger.info(url)
+                        async def file_chunks():
+                            nonlocal sent, last_hb
+                            while True:
+                                # Read off the event loop: a blocking read here
+                                # stalls heartbeats and every other activity
+                                # sharing this worker.
+                                chunk = await asyncio.to_thread(stream.read, 8 * 1024 * 1024)
+                                if not chunk:
+                                    break
+                                sent += len(chunk)
+                                now = asyncio.get_event_loop().time()
+                                if now - last_hb >= _HEARTBEAT_INTERVAL_SECS:
+                                    _activity_heartbeat({"file": path, "sent": sent, "size": size})
+                                    last_hb = now
+                                yield chunk
 
-                async with session.post(url, data=file_chunks()) as response:
-                    if response.status not in [200, 201]:
-                        txt = await response.text()
-                        logger.error(f"Error uploading file: {txt}")
-                        raise Exception(f"Error uploading file: {response.status}")
-                    logger.info(f"Uploaded {path}")
+                        async with session.post(url, data=file_chunks()) as response:
+                            if response.status not in [200, 201]:
+                                txt = await response.text()
+                                logger.error(f"Error uploading file: {txt}")
+                                raise Exception(f"Error uploading file: {response.status}")
+                            logger.info(f"Uploaded {path} ({sent} bytes)")
+                break
+            except (asyncio.TimeoutError, aiohttp.ClientError, OSError) as e:
+                if attempt >= UPLOAD_MAX_ATTEMPTS:
+                    logger.error(f"upload {path}: giving up after {attempt} attempts: {e}")
+                    raise
+                delay = 5 * (2 ** (attempt - 1))
+                logger.warning(
+                    f"upload {path}: attempt {attempt} failed ({type(e).__name__}: {e}); "
+                    f"restarting the file in {delay}s"
+                )
+                _activity_heartbeat({"file": path, "attempt": attempt, "retry": True})
+                await asyncio.sleep(delay)
     if len(local_files):
         # Commit
         try:

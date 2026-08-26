@@ -28,6 +28,16 @@ rules:
     - patch
     - update
     - watch
+# Job failures are reported by reading the failed pod's logs
+# (JobMan._get_pod_logs_for_job); without this subresource the error says
+# "<unavailable>" exactly when the reason matters.
+- apiGroups:
+  - ""
+  resources:
+    - pods/log
+  verbs:
+    - get
+    - list
 - apiGroups:
   - "apps"
   resources:
@@ -70,6 +80,13 @@ rules:
     - patch
     - update
     - watch
+{{- if .Values.rbac.serving }}
+# Routing and autoscaling objects for the SPARQL endpoints. Only needed where
+# those endpoints are actually created. When KACE runs its batch work on one
+# cluster and manages serving on another, the serving cluster grants these to
+# the remote ServiceAccount instead (deploy/gke-remote-rbac.yaml) and the batch
+# cluster sets rbac.serving=false -- these CRDs do not exist there, and RBAC
+# refuses to let an installer grant permissions they do not themselves hold.
 - apiGroups:
     - "gateway.networking.k8s.io"
   resources:
@@ -112,6 +129,7 @@ rules:
     - patch
     - update
     - watch
+{{- end }}
 ---
 kind: RoleBinding
 apiVersion: rbac.authorization.k8s.io/v1

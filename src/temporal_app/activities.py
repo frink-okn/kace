@@ -1,4 +1,5 @@
 from temporalio import activity
+from temporalio.exceptions import ApplicationError
 from k8s.podman import JobMan
 from k8s import clients
 from k8s import fuseki_server_manager, ldf_server_manager
@@ -87,7 +88,11 @@ async def watch_k8s_job_sync(job_name: str, poll_interval: int = 5, cluster: str
                 namespace=job_man.namespace,
             )
         except k8s_client.exceptions.ApiException as e:
-            raise Exception(f"Failed to fetch Job '{job_name}': {e}, likely the job was never created.")
+            # Non-retryable: re-running the watcher will not conjure the Job.
+            raise ApplicationError(
+                f"Failed to fetch Job '{job_name}': {e}, likely the job was never created.",
+                non_retryable=True,
+            )
         succeeded     = job.status.succeeded or 0
         failed        = job.status.failed or 0
         backoff_limit = job.spec.backoff_limit if job.spec.backoff_limit is not None else 6
@@ -101,7 +106,13 @@ async def watch_k8s_job_sync(job_name: str, poll_interval: int = 5, cluster: str
             return
         if failed > backoff_limit:
             pod_info = await _asyncio.to_thread(job_man._get_pod_logs_for_job, job_name)
-            raise Exception(f"Job '{job_name}' failed after {failed} attempts.\n{pod_info}")
+            # The Job itself failed -- a terminal fact about the work, not a
+            # transient problem with watching it. Retrying would just re-read
+            # the same failure.
+            raise ApplicationError(
+                f"Job '{job_name}' failed after {failed} attempts.\n{pod_info}",
+                non_retryable=True,
+            )
         await _asyncio.sleep(poll_interval)
 
 
@@ -810,6 +821,22 @@ async def resolve_kg_ref(repo: str) -> dict:
 
 
 @activity.defn
+def kg_selected(shortname: str, repo: str, only_kg: list = None) -> bool:
+    """Does this KG match an `only_kg` subset filter?
+
+    Accepts EITHER the registry shortname or the lakeFS repo id, because the two
+    differ for several KGs (dreamkg / dream-kg, spoke-genelab-kg / ...) and the
+    caller has no way to know which one this code wanted. Matching only one of
+    them silently selected nothing, and the build then ran an indexer with no
+    input files -- which fails deep inside QLever with an assertion rather than
+    saying "your filter matched nothing".
+    """
+    if not only_kg:
+        return True
+    wanted = {str(k).strip().lower() for k in only_kg}
+    return (shortname or "").lower() in wanted or (repo or "").lower() in wanted
+
+
 async def resolve_qlever_refs(only_kg: list = None) -> dict:
     """Resolve the ref+commit for every lakefs repo that feeds the federated
     qlever index. Each KG uses its latest semver tag (falling back to 'main'
@@ -841,9 +868,10 @@ async def resolve_qlever_refs(only_kg: list = None) -> dict:
             continue
         if kg.shortname in skip_repos:
             continue
-        if only_kg and kg.shortname not in only_kg:
+        repo_id = kg.frink_options.lakefs_repo
+        if not kg_selected(kg.shortname, repo_id, only_kg):
             continue
-        repo = kg.frink_options.lakefs_repo
+        repo = repo_id
         # Override lookup tries shortname first, then lakefs_repo. Lets the
         # dict be keyed however a future contributor finds clearest.
         override = overrides.get(kg.shortname) or overrides.get(repo) or {}
@@ -888,7 +916,7 @@ async def resolve_qlever_refs(only_kg: list = None) -> dict:
     # so the federated index always covers it.
     wikidata_repo = "wikidata"
     wikidata_shortname = "wikidata"
-    if not only_kg or wikidata_shortname in only_kg:
+    if kg_selected(wikidata_shortname, wikidata_repo, only_kg):
         wd_override = PER_REPO_LAKEFS_OVERRIDES.get(wikidata_shortname) or {}
         wd_ref = wd_override.get("ref", "main")
         wd_remote_path = wd_override.get("remote_path", "graph.nt.gz")

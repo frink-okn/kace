@@ -13,6 +13,18 @@ with workflow.unsafe.imports_passed_through():
 from temporalio.common import RetryPolicy
 
 NO_RETRY = RetryPolicy(maximum_attempts=1)
+# Watching a K8s Job is pure polling, so it is safe to re-attach. This matters
+# because the watcher heartbeats precisely so a multi-day build can outlive a
+# worker restart -- but with maximum_attempts=1 a heartbeat timeout is terminal,
+# and a routine `rollout restart` kills the workflow instead. Terminal outcomes
+# (Job failed, Job missing) are raised non-retryable by the activity, so this
+# only retries the act of watching.
+WATCH_RETRY = RetryPolicy(
+    initial_interval=timedelta(seconds=10),
+    backoff_coefficient=2.0,
+    maximum_interval=timedelta(minutes=1),
+    maximum_attempts=20,
+)
 
 @workflow.defn
 class QLeverDeploymentWorkflow:
@@ -44,7 +56,7 @@ class QLeverDeploymentWorkflow:
                 args=[fetch_job, 5, "remote"],
                 start_to_close_timeout=timedelta(hours=12),
                 heartbeat_timeout=timedelta(minutes=5),
-                retry_policy=NO_RETRY
+                retry_policy=WATCH_RETRY
             )
 
         # Deploy QLever Server

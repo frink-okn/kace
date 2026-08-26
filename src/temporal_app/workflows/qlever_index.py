@@ -28,6 +28,7 @@ with workflow.unsafe.imports_passed_through():
         write_qlever_state,
         create_qlever_index_pvc,
         gc_qlever_index_pvcs,
+        submit_qlever_index_upload,
         notify_slack,
     )
     from config import config as app_config
@@ -47,6 +48,9 @@ JOB_SUBMIT_TIMEOUT  = timedelta(minutes=10)
 # Multi-day federated index build; watch activity heartbeats so worker bounces
 # do not lose progress.
 BUILD_WATCH_TIMEOUT = timedelta(days=7)
+# Shipping a multi-hundred-GB index into the transfer bucket is long but not
+# multi-day; heartbeats make the exact number uncritical.
+UPLOAD_WATCH_TIMEOUT = timedelta(days=1)
 HEARTBEAT_TIMEOUT   = timedelta(minutes=5)
 
 NO_RETRY = RetryPolicy(maximum_attempts=1)
@@ -251,6 +255,26 @@ class QLeverIndexWorkflow:
             heartbeat_timeout=HEARTBEAT_TIMEOUT,
             retry_policy=NO_RETRY,
         )
+
+        # ── Phase 6.5: ship the index to the serving cluster ──────────────
+        # The index is built here and served elsewhere; an RWO PVC cannot cross
+        # a cluster boundary, so the bytes go through a transfer bucket. No-op
+        # (returns "") in single-cluster mode. State is written only after this
+        # succeeds, so a failed transfer never marks a build as servable.
+        upload_job = await workflow.execute_activity(
+            submit_qlever_index_upload,
+            args=[build_id, pvc_name],
+            start_to_close_timeout=JOB_SUBMIT_TIMEOUT,
+            retry_policy=NO_RETRY,
+        )
+        if upload_job:
+            await workflow.execute_activity(
+                watch_k8s_job_sync,
+                args=[upload_job],
+                start_to_close_timeout=UPLOAD_WATCH_TIMEOUT,
+                heartbeat_timeout=HEARTBEAT_TIMEOUT,
+                retry_policy=NO_RETRY,
+            )
 
         # ── Phase 7: write new state ──────────────────────────────────────
         old_serving = state.get("build_id_serving")

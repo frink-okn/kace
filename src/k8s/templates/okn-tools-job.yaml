@@ -1,0 +1,10 @@
+# This image carries several tools (okn-tools, riot, arq, robot, okn-indexing),
+# so there is no sensible default. Callers pass the one they want as
+# run_job(command=[...]). The command below only runs if a caller forgets, and
+# exists so that fails loudly -- the image's own CMD is `python3`, which would
+# otherwise exit 0 without doing anything.
+image: ghcr.io/frink-okn/okn-tools:v1.0.0
+command:
+  - /bin/sh
+  - -c
+  - 'echo "okn-tools-job: no command given; pass command=[...] to run_job" >&2; exit 1'

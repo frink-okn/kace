@@ -820,7 +820,6 @@ async def resolve_kg_ref(repo: str) -> dict:
     return {"ref": ref, "tag": tag, "commit": commit}
 
 
-@activity.defn
 def kg_selected(shortname: str, repo: str, only_kg: list = None) -> bool:
     """Does this KG match an `only_kg` subset filter?
 
@@ -837,6 +836,7 @@ def kg_selected(shortname: str, repo: str, only_kg: list = None) -> bool:
     return (shortname or "").lower() in wanted or (repo or "").lower() in wanted
 
 
+@activity.defn
 async def resolve_qlever_refs(only_kg: list = None) -> dict:
     """Resolve the ref+commit for every lakefs repo that feeds the federated
     qlever index. Each KG uses its latest semver tag (falling back to 'main'

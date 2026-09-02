@@ -29,7 +29,10 @@ class Config(BaseModel):
     smtp_server: str
     gh_token: str
     kg_config_url: str
-    stop_email: str
+    # Suppress outgoing mail. A bool, deliberately: as a raw string, the
+    # perfectly reasonable STOP_EMAIL="false" is truthy and silently keeps
+    # every notification switched off.
+    stop_email: bool
     temporal_host: str
     temporal_namespace: str
     networking_mode: str
@@ -129,7 +132,7 @@ config = Config(
     smtp_port=int(os.environ.get('SMTP_PORT', 25)),
     gh_token=os.environ.get('GH_TOKEN', ''),
     kg_config_url=os.environ.get('KG_CONFIG_URL', 'https://raw.githubusercontent.com/frink-okn/okn-registry/refs/heads/main/docs/registry/kgs.yaml'),
-    stop_email=os.environ.get('STOP_EMAIL', ''),
+    stop_email=os.environ.get('STOP_EMAIL', '').strip().lower() in ('1', 'true', 'yes', 'on'),
     temporal_host=os.environ.get('TEMPORAL_HOST', 'localhost:7233'),
     temporal_namespace=os.environ.get('TEMPORAL_NAMESPACE', 'default'),
     networking_mode=os.environ.get('NETWORKING_MODE', 'ingress'),

@@ -366,12 +366,16 @@ async def notify_slack(message: str, channel: str = None) -> None:
     slack_canary.send_message(message)
 
 @activity.defn
-async def notify_email_deployed(kg_name: str, version: str, recipient_email: str) -> None:
+async def notify_email_deployed(kg_name: str, version: str, recipient_email: str,
+                                kg_slug: str = "") -> None:
+    """kg_slug (registry shortname) is appended last so existing workflow
+    histories replay unchanged."""
     logger.info(f"Sending deployment email for {kg_name} {version} to {recipient_email}")
     mail_canary.send_deployed_email(
         kg_name=kg_name,
         version=version,
-        recipient_email=recipient_email
+        recipient_email=recipient_email,
+        kg_slug=kg_slug,
     )
 
 @activity.defn

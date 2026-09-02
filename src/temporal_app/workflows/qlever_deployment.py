@@ -71,7 +71,12 @@ class QLeverDeploymentWorkflow:
         if kg_config.get('emails'):
              await workflow.execute_activity(
                  notify_email_deployed,
-                 args=[kg_config['title'] + " (QLever Endpoint)", lakefs_action.get('tag_id', 'latest'), ",".join(kg_config['emails'])],
+                 args=[kg_config['title'] + " (QLever Endpoint)",
+                       lakefs_action.get('tag_id', 'latest'),
+                       ",".join(kg_config['emails']),
+                       # The shortname, separately: it keys the query page's
+                       # `sources` filter and the /{shortname} endpoint path.
+                       kg_config.get('shortname', '')],
                  start_to_close_timeout=timedelta(minutes=2),
                  retry_policy=NO_RETRY
              )

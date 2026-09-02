@@ -28,7 +28,15 @@ python src/temporal_server.py
 python -m temporal_app.worker
 ```
 
-There are no tests, lint config, or build script — `Dockerfile` just installs `requirements.txt` and copies `src/`. (`src/temporal_app/trigger_test.py` is a scratch script for manually starting workflows against a Temporal server, not a test suite.) Deployment is via the Helm chart in `helm-chart/kace/` (depends on the upstream `temporal` chart, disabled by default).
+Checks live in `tests/` — run them with `tests/run.sh` (or one at a time:
+`PYTHONPATH=src python tests/test_kg_subset.py`). They are plain assert scripts,
+not pytest: each is self-contained, exits non-zero on failure, and prints what it
+proved. Each one exists because something broke in production, and the docstring
+says which failure it prevents — read that before changing the behaviour it pins.
+There is no lint config or build script; `Dockerfile` just installs
+`requirements.txt` and copies `src/`. (`src/temporal_app/trigger_test.py` is a
+scratch script for manually starting workflows against a Temporal server, not a
+test.) Deployment is via the Helm chart in `helm-chart/kace/` (depends on the upstream `temporal` chart, disabled by default).
 
 ## High-level flow
 

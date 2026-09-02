@@ -58,7 +58,7 @@ spec:
       # need an explicit delete -- see cost-dashboard/strip_init_containers.py.
       containers:
       - name: qlever-server
-        image: adfreiburg/qlever:latest
+        image: {{ qlever_image }}
         command:
         - qlever-server
         - -i

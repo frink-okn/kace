@@ -328,6 +328,7 @@ async def deploy_qlever(kg_config: dict, lakefs_action: dict, cpu: str = "1", me
         "host_name": config.frink_address,
         "pvc_storage_size": pvc_storage_size,
         "qlever_storage_class": config.qlever_storage_class,
+        "qlever_image": config.qlever_server_image,
         "mem_size": mem_size,
         "cpu": cpu,
         "memory": memory,

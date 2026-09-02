@@ -150,7 +150,8 @@ class HDTConversionWorkflow:
         await self._cleanup()
 
     async def _run_job_and_wait(self, *, job_type, job_name, command, args,
-                                env_vars, watch_timeout, resources=None) -> None:
+                                env_vars, watch_timeout, resources=None,
+                                image=None) -> None:
         """
         Submit a K8s Job and block until it reaches a terminal state.
 
@@ -160,8 +161,12 @@ class HDTConversionWorkflow:
         """
         await workflow.execute_activity(
             run_k8s_job,
+            # Positional: run_k8s_job's signature is
+            # (job_type, job_name, repo, branch, command, args, resources,
+            #  env_vars, additional_volume_mounts, image, ...)
             args=[job_type, job_name, self.repo_id, self.branch_id,
-                  command, args, resources or self.resources, env_vars],
+                  command, args, resources or self.resources, env_vars,
+                  None, image],
             start_to_close_timeout=timedelta(minutes=10),
             retry_policy=NO_RETRY,
         )
@@ -391,6 +396,12 @@ class HDTConversionWorkflow:
             args=["-c", qlever_cmd],
             env_vars={"STXXL_MEMORY": f"{self.stxxl_memory}"},
             watch_timeout=LONG_RUNNING_JOB_TIMEOUT,
+            # Same knob the federated build uses. Without it this job took the
+            # literal baked into qlever-index-job.yaml, so the indexer version
+            # was only configurable on one of the two index paths -- and the
+            # per-KG indexes are exactly the ones whose format has to stay in
+            # step with the per-KG servers.
+            image=app_config.qlever_image,
         )
 
     # 6. Documentation job — disabled. Re-enable by uncommenting this method and its

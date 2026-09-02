@@ -46,6 +46,11 @@ class Config(BaseModel):
     ldf_sync_image: str
     ldf_host_name: str
     qlever_image: str
+    # Image for the per-KG QLever servers. Separate from qlever_image, which is
+    # the INDEXER (and the federated server): an index built by one qlever build
+    # is only readable by a server whose index format matches, so the two move
+    # independently and deliberately.
+    qlever_server_image: str
     qlever_indexer_cpu: str
     qlever_indexer_memory: str
     qlever_indexer_stxxl_memory: str
@@ -136,6 +141,7 @@ config = Config(
     ldf_sync_image=os.environ.get('LDF_SYNC_IMAGE', ''),
     ldf_host_name=os.environ.get('LDF_HOST_NAME', 'frink.apps.renci.org'),
     qlever_image=os.environ.get('QLEVER_IMAGE', 'adfreiburg/qlever:commit-99b6db5'),
+    qlever_server_image=os.environ.get('QLEVER_SERVER_IMAGE', 'adfreiburg/qlever:commit-70c9f855d0'),
     qlever_indexer_cpu=os.environ.get('QLEVER_INDEXER_CPU', '8'),
     qlever_indexer_memory=os.environ.get('QLEVER_INDEXER_MEMORY', '100Gi'),
     qlever_indexer_stxxl_memory=os.environ.get('QLEVER_INDEXER_STXXL_MEMORY', '40G'),

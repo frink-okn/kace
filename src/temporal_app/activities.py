@@ -974,10 +974,12 @@ async def write_qlever_state(state: dict) -> None:
 @activity.defn
 async def create_qlever_index_pvc(build_id: str, image: str, cluster: str = "local") -> str:
     from k8s import qlever_pvc
-    storage_class = (app_config.qlever_index_serving_storage_class
-                     if clients.effective(cluster) == clients.REMOTE
+    remote = clients.effective(cluster) == clients.REMOTE
+    storage_class = (app_config.qlever_index_serving_storage_class if remote
                      else app_config.qlever_index_pvc_storage_class)
-    return qlever_pvc.create_index_pvc(build_id, image, cluster=cluster, storage_class=storage_class)
+    size = (app_config.qlever_index_serving_pvc_size if remote else "") or app_config.qlever_index_pvc_size
+    return qlever_pvc.create_index_pvc(build_id, image, cluster=cluster,
+                                       storage_class=storage_class, size=size)
 
 
 def _index_bucket_env() -> dict:

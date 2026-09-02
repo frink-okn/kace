@@ -28,13 +28,14 @@ def _api(cluster: str = clients.LOCAL) -> client.CoreV1Api:
 
 
 def create_index_pvc(build_id: str, image: str, cluster: str = clients.LOCAL,
-                     storage_class: str = None) -> str:
+                     storage_class: str = None, size: str = None) -> str:
     """Create the per-build output PVC. Idempotent: returns silently if it
     already exists. Annotates with the qlever image used so rollback can
     refuse to mount an index built by an incompatible binary."""
     name = pvc_name(build_id)
     namespace = clients.namespace(cluster)
     storage_class = storage_class or app_config.qlever_index_pvc_storage_class
+    size = size or app_config.qlever_index_pvc_size
     body = client.V1PersistentVolumeClaim(
         metadata=client.V1ObjectMeta(
             name=name,
@@ -52,7 +53,7 @@ def create_index_pvc(build_id: str, image: str, cluster: str = clients.LOCAL,
             access_modes=["ReadWriteOnce"],
             storage_class_name=storage_class,
             resources=client.V1ResourceRequirements(
-                requests={"storage": app_config.qlever_index_pvc_size},
+                requests={"storage": size},
             ),
         ),
     )

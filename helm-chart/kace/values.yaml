@@ -253,6 +253,11 @@ app_config:
   # Storage class for the PVC the federation server MOUNTS (serving cluster).
   # Same value in single-cluster mode; they diverge once the two are split.
   qlever_index_serving_storage_class: "premium-rwo"
+  # Size of the serving PVC. Empty = same as qlever_index_pvc_size. Worth
+  # setting: the build volume needs room for intermediates, the serving volume
+  # only holds the finished index, and premium SSD is billed on the provisioned
+  # size rather than what is used.
+  qlever_index_serving_pvc_size: ""
   # Bucket used to move a finished index from the build cluster to the serving
   # cluster (an RWO PVC cannot span clusters). Empty = single-cluster mode: the
   # build PVC is the serving PVC and no transfer happens. GCS works via its

@@ -97,6 +97,11 @@ class Config(BaseModel):
     # Storage class for the SERVING index PVC on the remote cluster;
     # qlever_index_pvc_storage_class is the build cluster's.
     qlever_index_serving_storage_class: str
+    # Size of the SERVING index PVC. Empty = same as the build PVC. They differ
+    # because the build volume needs room for intermediates while the serving
+    # volume only holds the finished index -- and on the serving side that is
+    # premium SSD billed by the provisioned TiB, not by what is used.
+    qlever_index_serving_pvc_size: str
 
 
 
@@ -177,4 +182,5 @@ config = Config(
     qlever_index_bucket_access_key=os.environ.get('QLEVER_INDEX_BUCKET_ACCESS_KEY', ''),
     qlever_index_bucket_secret_key=os.environ.get('QLEVER_INDEX_BUCKET_SECRET_KEY', ''),
     qlever_index_serving_storage_class=os.environ.get('QLEVER_INDEX_SERVING_STORAGE_CLASS', 'premium-rwo'),
+    qlever_index_serving_pvc_size=os.environ.get('QLEVER_INDEX_SERVING_PVC_SIZE', ''),
 )

@@ -1,4 +1,4 @@
-image: ghcr.io/frink-okn/hdtc:v1.0.2
+image: ghcr.io/frink-okn/hdtc:v1.1.0
 command:
   - hdtc
 

@@ -21,6 +21,7 @@ mapping = {
     "void-job": os.path.dirname(os.path.realpath(__file__)) + os.path.join(os.path.sep + "templates", "void-description-job.yaml"),
     "hdtc-job": os.path.dirname(os.path.realpath(__file__)) + os.path.join(os.path.sep + "templates", "hdtc-conversion.yaml"),
     "qlever-fetch-job": os.path.dirname(os.path.realpath(__file__)) + os.path.join(os.path.sep + "templates", "qlever-fetch-index-job.yaml"),
+    "okn-tools-job": os.path.dirname(os.path.realpath(__file__)) + os.path.join(os.path.sep + "templates", "okn-tools-job.yaml"),
     ## add other pods here
 }
 

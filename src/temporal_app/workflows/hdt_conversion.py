@@ -207,6 +207,8 @@ class HDTConversionWorkflow:
         hdt_convert_args = ['create'] + file_list + [
             '--temp-dir',
             self.working_dir + '/hdt-tmp/',
+            '--dataset-uri',
+            self.dataset_uri,
             '--index',
             '--memory-limit',
             self.input.program_memory,

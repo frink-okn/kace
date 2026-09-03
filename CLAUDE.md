@@ -28,7 +28,15 @@ python src/temporal_server.py
 python -m temporal_app.worker
 ```
 
-There are no tests, lint config, or build script — `Dockerfile` just installs `requirements.txt` and copies `src/`. (`src/temporal_app/trigger_test.py` is a scratch script for manually starting workflows against a Temporal server, not a test suite.) Deployment is via the Helm chart in `helm-chart/kace/` (depends on the upstream `temporal` chart, disabled by default).
+Checks live in `tests/` — run them with `tests/run.sh` (or one at a time:
+`PYTHONPATH=src python tests/test_kg_subset.py`). They are plain assert scripts,
+not pytest: each is self-contained, exits non-zero on failure, and prints what it
+proved. Each one exists because something broke in production, and the docstring
+says which failure it prevents — read that before changing the behaviour it pins.
+There is no lint config or build script; `Dockerfile` just installs
+`requirements.txt` and copies `src/`. (`src/temporal_app/trigger_test.py` is a
+scratch script for manually starting workflows against a Temporal server, not a
+test.) Deployment is via the Helm chart in `helm-chart/kace/` (depends on the upstream `temporal` chart, disabled by default).
 
 ## High-level flow
 
@@ -130,7 +138,7 @@ do not add routes to a separate app or router without it.
 
 ## Key building blocks
 
-- **`src/k8s/`** — the only place that talks to the cluster. `podman.JobMan` submits Jobs from templates in `src/k8s/templates/*.yaml`; the `job_type` string passed to `run_k8s_job` selects the template via the `mapping` dict at the top of `podman.py` (`hdtc-job`, `nt-merge-job`, `qlever-index-job`, `neo4j-rdf-job`, `neo4j-json-job`, `spider-job`, `void-job`, `documentation-job`). Four deployment managers render Deployment/Service/Ingress/PVC manifests from Jinja dirs resolved in `src/k8s/__init__.py`: `server_man.py` (Fuseki — also reused for the old Fuseki-federation templates in `templates/federation/`), `server_man_ldf.py` (LDF aggregator), `server_man_qlever.py` (per-KG QLever), `server_man_qlever_federation.py` (federated QLever, `templates/qlever-federation/`). `qlever_state.py` (ConfigMap-backed state) and `qlever_pvc.py` (per-build output PVC lifecycle) backstop the federated index build.
+- **`src/k8s/`** — the only place that talks to the cluster. `podman.JobMan` submits Jobs from templates in `src/k8s/templates/*.yaml`; the `job_type` string passed to `run_k8s_job` selects the template via the `mapping` dict at the top of `podman.py` (`hdtc-job`, `nt-merge-job`, `qlever-index-job`, `neo4j-rdf-job`, `neo4j-json-job`, `spider-job`, `void-job`, `documentation-job`, `okn-tools-job`). Four deployment managers render Deployment/Service/Ingress/PVC manifests from Jinja dirs resolved in `src/k8s/__init__.py`: `server_man.py` (Fuseki — also reused for the old Fuseki-federation templates in `templates/federation/`), `server_man_ldf.py` (LDF aggregator), `server_man_qlever.py` (per-KG QLever), `server_man_qlever_federation.py` (federated QLever, `templates/qlever-federation/`). `qlever_state.py` (ConfigMap-backed state) and `qlever_pvc.py` (per-build output PVC lifecycle) backstop the federated index build.
 - **`src/temporal_app/`** — `activities.py` holds ALL activity implementations (~1000 lines); workflows in `workflows/*.py` are thin orchestrations over them. `worker.py` registers every workflow AND every activity.
 - **`src/lakefs_util/io_util.py`** — wraps LakeFS client for download/upload, branch/tag creation, `clean_up_files(repo_id)`. `semver_util.py` handles tag ordering.
 - **`src/models/`** — Pydantic models. `lakefs_models.py` defines webhook payloads (`LakefsMergeActionModel`, `LakefTagCreationModel`). `kg_metadata.py` defines `KGConfig` / `KG`, loaded from the okn-registry kgs.yaml at `config.kg_config_url` via `KGConfig.from_git()`.

@@ -226,7 +226,24 @@ app_config:
   ldf_sync_image: ""
   ldf_host_name: "frink.apps.renci.org"
   # QLever federated index build (QLeverIndexWorkflow)
+  # Indexer image -- the build that WRITES index files, and the one the
+  # federated server runs (so it can read what that build produced).
+  #
+  # Pinned to a pre-3159 build on purpose. QLever PR 3159 (merged 2026-09-01)
+  # changed the on-disk index format: a post-3159 server cannot read an index
+  # written before it, and that is what broke the per-KG servers when :latest
+  # moved. Every existing index was written by commit-99b6db5.
+  #
+  # Migrating means moving qlever_image and qlever_server_image TOGETHER, and
+  # either rebuilding each index or running `qlever-upgrade-index` (upstream
+  # reports ~10x faster than a rebuild, keeping the old index alongside).
+  # Bumping qlever_image alone also re-triggers the federated build: change
+  # detection compares the configured image against the one in state.
   qlever_image: "adfreiburg/qlever:commit-99b6db5"
+  # Per-KG QLever server image. Pinned, not :latest -- a server can only read an
+  # index whose format its build understands, so an unpinned tag turns any
+  # upstream push into an unannounced fleet-wide format change.
+  qlever_server_image: "adfreiburg/qlever:commit-70c9f855d0"
   qlever_indexer_cpu: "8"
   qlever_indexer_memory: "64Gi"
   qlever_indexer_stxxl_memory: "10G"
@@ -236,6 +253,11 @@ app_config:
   # Storage class for the PVC the federation server MOUNTS (serving cluster).
   # Same value in single-cluster mode; they diverge once the two are split.
   qlever_index_serving_storage_class: "premium-rwo"
+  # Size of the serving PVC. Empty = same as qlever_index_pvc_size. Worth
+  # setting: the build volume needs room for intermediates, the serving volume
+  # only holds the finished index, and premium SSD is billed on the provisioned
+  # size rather than what is used.
+  qlever_index_serving_pvc_size: ""
   # Bucket used to move a finished index from the build cluster to the serving
   # cluster (an RWO PVC cannot span clusters). Empty = single-cluster mode: the
   # build PVC is the serving PVC and no transfer happens. GCS works via its

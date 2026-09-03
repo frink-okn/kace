@@ -29,7 +29,10 @@ class Config(BaseModel):
     smtp_server: str
     gh_token: str
     kg_config_url: str
-    stop_email: str
+    # Suppress outgoing mail. A bool, deliberately: as a raw string, the
+    # perfectly reasonable STOP_EMAIL="false" is truthy and silently keeps
+    # every notification switched off.
+    stop_email: bool
     temporal_host: str
     temporal_namespace: str
     networking_mode: str
@@ -46,6 +49,11 @@ class Config(BaseModel):
     ldf_sync_image: str
     ldf_host_name: str
     qlever_image: str
+    # Image for the per-KG QLever servers. Separate from qlever_image, which is
+    # the INDEXER (and the federated server): an index built by one qlever build
+    # is only readable by a server whose index format matches, so the two move
+    # independently and deliberately.
+    qlever_server_image: str
     qlever_indexer_cpu: str
     qlever_indexer_memory: str
     qlever_indexer_stxxl_memory: str
@@ -92,6 +100,11 @@ class Config(BaseModel):
     # Storage class for the SERVING index PVC on the remote cluster;
     # qlever_index_pvc_storage_class is the build cluster's.
     qlever_index_serving_storage_class: str
+    # Size of the SERVING index PVC. Empty = same as the build PVC. They differ
+    # because the build volume needs room for intermediates while the serving
+    # volume only holds the finished index -- and on the serving side that is
+    # premium SSD billed by the provisioned TiB, not by what is used.
+    qlever_index_serving_pvc_size: str
 
 
 
@@ -119,7 +132,7 @@ config = Config(
     smtp_port=int(os.environ.get('SMTP_PORT', 25)),
     gh_token=os.environ.get('GH_TOKEN', ''),
     kg_config_url=os.environ.get('KG_CONFIG_URL', 'https://raw.githubusercontent.com/frink-okn/okn-registry/refs/heads/main/docs/registry/kgs.yaml'),
-    stop_email=os.environ.get('STOP_EMAIL', ''),
+    stop_email=os.environ.get('STOP_EMAIL', '').strip().lower() in ('1', 'true', 'yes', 'on'),
     temporal_host=os.environ.get('TEMPORAL_HOST', 'localhost:7233'),
     temporal_namespace=os.environ.get('TEMPORAL_NAMESPACE', 'default'),
     networking_mode=os.environ.get('NETWORKING_MODE', 'ingress'),
@@ -136,6 +149,7 @@ config = Config(
     ldf_sync_image=os.environ.get('LDF_SYNC_IMAGE', ''),
     ldf_host_name=os.environ.get('LDF_HOST_NAME', 'frink.apps.renci.org'),
     qlever_image=os.environ.get('QLEVER_IMAGE', 'adfreiburg/qlever:commit-99b6db5'),
+    qlever_server_image=os.environ.get('QLEVER_SERVER_IMAGE', 'adfreiburg/qlever:commit-70c9f855d0'),
     qlever_indexer_cpu=os.environ.get('QLEVER_INDEXER_CPU', '8'),
     qlever_indexer_memory=os.environ.get('QLEVER_INDEXER_MEMORY', '100Gi'),
     qlever_indexer_stxxl_memory=os.environ.get('QLEVER_INDEXER_STXXL_MEMORY', '40G'),
@@ -171,4 +185,5 @@ config = Config(
     qlever_index_bucket_access_key=os.environ.get('QLEVER_INDEX_BUCKET_ACCESS_KEY', ''),
     qlever_index_bucket_secret_key=os.environ.get('QLEVER_INDEX_BUCKET_SECRET_KEY', ''),
     qlever_index_serving_storage_class=os.environ.get('QLEVER_INDEX_SERVING_STORAGE_CLASS', 'premium-rwo'),
+    qlever_index_serving_pvc_size=os.environ.get('QLEVER_INDEX_SERVING_PVC_SIZE', ''),
 )

@@ -328,6 +328,7 @@ async def deploy_qlever(kg_config: dict, lakefs_action: dict, cpu: str = "1", me
         "host_name": config.frink_address,
         "pvc_storage_size": pvc_storage_size,
         "qlever_storage_class": config.qlever_storage_class,
+        "qlever_image": config.qlever_server_image,
         "mem_size": mem_size,
         "cpu": cpu,
         "memory": memory,
@@ -365,12 +366,16 @@ async def notify_slack(message: str, channel: str = None) -> None:
     slack_canary.send_message(message)
 
 @activity.defn
-async def notify_email_deployed(kg_name: str, version: str, recipient_email: str) -> None:
+async def notify_email_deployed(kg_name: str, version: str, recipient_email: str,
+                                kg_slug: str = "") -> None:
+    """kg_slug (registry shortname) is appended last so existing workflow
+    histories replay unchanged."""
     logger.info(f"Sending deployment email for {kg_name} {version} to {recipient_email}")
     mail_canary.send_deployed_email(
         kg_name=kg_name,
         version=version,
-        recipient_email=recipient_email
+        recipient_email=recipient_email,
+        kg_slug=kg_slug,
     )
 
 @activity.defn
@@ -820,7 +825,6 @@ async def resolve_kg_ref(repo: str) -> dict:
     return {"ref": ref, "tag": tag, "commit": commit}
 
 
-@activity.defn
 def kg_selected(shortname: str, repo: str, only_kg: list = None) -> bool:
     """Does this KG match an `only_kg` subset filter?
 
@@ -837,6 +841,7 @@ def kg_selected(shortname: str, repo: str, only_kg: list = None) -> bool:
     return (shortname or "").lower() in wanted or (repo or "").lower() in wanted
 
 
+@activity.defn
 async def resolve_qlever_refs(only_kg: list = None) -> dict:
     """Resolve the ref+commit for every lakefs repo that feeds the federated
     qlever index. Each KG uses its latest semver tag (falling back to 'main'
@@ -973,10 +978,12 @@ async def write_qlever_state(state: dict) -> None:
 @activity.defn
 async def create_qlever_index_pvc(build_id: str, image: str, cluster: str = "local") -> str:
     from k8s import qlever_pvc
-    storage_class = (app_config.qlever_index_serving_storage_class
-                     if clients.effective(cluster) == clients.REMOTE
+    remote = clients.effective(cluster) == clients.REMOTE
+    storage_class = (app_config.qlever_index_serving_storage_class if remote
                      else app_config.qlever_index_pvc_storage_class)
-    return qlever_pvc.create_index_pvc(build_id, image, cluster=cluster, storage_class=storage_class)
+    size = (app_config.qlever_index_serving_pvc_size if remote else "") or app_config.qlever_index_pvc_size
+    return qlever_pvc.create_index_pvc(build_id, image, cluster=cluster,
+                                       storage_class=storage_class, size=size)
 
 
 def _index_bucket_env() -> dict:

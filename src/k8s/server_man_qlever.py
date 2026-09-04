@@ -39,7 +39,7 @@ class QLeverServerDeploymentManager(ServerDeploymentManager):
             raw.update(annotations)
             body["metadata"]["annotations"] = raw
 
-        k8s_client = client.CustomObjectsApi()
+        k8s_client = self._custom()
         group = "networking.gke.io"
         version = "v1"
         plural = "gcpbackendpolicies"
@@ -58,9 +58,46 @@ class QLeverServerDeploymentManager(ServerDeploymentManager):
             else:
                 raise e
 
+    def get_httpscaledobject(self, parameters: Dict[str, Any]) -> Dict:
+        tmpl = self.templates.get_template("httpscaledobject.j2")
+        return yaml.safe_load(tmpl.render(parameters))
+
+    def create_or_update_httpscaledobject(self, parameters: Dict[str, Any], annotations: Dict[str, str] = None) -> None:
+        """Hand this KG's replica count to KEDA (min 0, max 1).
+
+        The per-KG servers answer ~2 organic requests a day between them, so they
+        run at zero and the interceptor named in httproute.j2 wakes one on demand.
+        Without this object the interceptor has no route for the Host header that
+        route rewrites to, and every request for this KG gets a 404."""
+        body = self.get_httpscaledobject(parameters)
+        name = body["metadata"]["name"]
+        if annotations:
+            raw = body["metadata"].get("annotations", {})
+            raw.update(annotations)
+            body["metadata"]["annotations"] = raw
+
+        k8s_client = self._custom()
+        group = "http.keda.sh"
+        version = "v1alpha1"
+        plural = "httpscaledobjects"
+        try:
+            k8s_client.get_namespaced_custom_object(
+                group=group, version=version, namespace=self.namespace, plural=plural, name=name
+            )
+            k8s_client.patch_namespaced_custom_object(
+                group=group, version=version, namespace=self.namespace, plural=plural, name=name, body=body
+            )
+        except ApiException as e:
+            if e.status == 404:
+                k8s_client.create_namespaced_custom_object(
+                    group=group, version=version, namespace=self.namespace, plural=plural, body=body
+                )
+            else:
+                raise e
+
     def create_or_update_pvc(self, parameters: Dict[str, Any], annotations: Dict[str, str] = None) -> None:
         pvc_body = self.get_pvc(parameters)
-        k8s_client = client.CoreV1Api()
+        k8s_client = self._core()
         pvc_name = pvc_body["metadata"]["name"]
 
         if annotations:
@@ -96,6 +133,12 @@ class QLeverServerDeploymentManager(ServerDeploymentManager):
             self.create_or_update_ingress(parameters=parameters, annotations=annotations)
         self.create_or_update_service(parameters=parameters, annotations=annotations)
         self.create_or_update_deployment(parameters=parameters, annotations=annotations, resources=resources)
+        if app_config.networking_mode == "gateway":
+            # After the Deployment, so KEDA finds its scale target on the first
+            # reconcile instead of reporting a missing one and retrying. The
+            # window where the route points at an interceptor that has no entry
+            # for this KG yet is sub-second, and this KG has no traffic yet.
+            self.create_or_update_httpscaledobject(parameters=parameters, annotations=annotations)
 
     def are_all_services_running(self, parameters: Dict[str, Any], annotations: Dict[str, Any]) -> bool:
         """
@@ -112,8 +155,8 @@ class QLeverServerDeploymentManager(ServerDeploymentManager):
         Scan for and delete any PVCs for this kg_name that do NOT match keep_version.
         Pass keep_version=None to delete all private PVCs (e.g. when switching to shared PVC).
         """
-        k8s_core = client.CoreV1Api()
-        k8s_apps = client.AppsV1Api()
+        k8s_core = self._core()
+        k8s_apps = self._apps()
 
         label_selector = f"app=frink-{kg_name}-qlever-server"
 

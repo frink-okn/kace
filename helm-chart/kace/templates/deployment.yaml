@@ -40,6 +40,13 @@ spec:
             {{ include "kace.env_variables" . | nindent 12 }}
             - name: K8S_NAMESPACE
               value: {{ .Release.Namespace }}
+            {{- if .Values.webhookToken.secretName }}
+            - name: WEBHOOK_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.webhookToken.secretName }}
+                  key: {{ .Values.webhookToken.secretKey }}
+            {{- end }}
 
           command:
             - 'uvicorn'
@@ -70,6 +77,11 @@ spec:
             - mountPath: {{ .Values.app_config.shared_data_dir }}
               name: shared
             {{ end }}
+            {{- if .Values.remoteCluster.secretName }}
+            - mountPath: /etc/kace/remote
+              name: remote-kubeconfig
+              readOnly: true
+            {{- end }}
         {{- if eq .Values.workerMode "celery" }}
         - name: {{ .Chart.Name}}-celery-worker
           securityContext:
@@ -102,6 +114,11 @@ spec:
             - mountPath: {{ .Values.app_config.shared_data_dir }}
               name: shared
             {{ end }}
+            {{- if .Values.remoteCluster.secretName }}
+            - mountPath: /etc/kace/remote
+              name: remote-kubeconfig
+              readOnly: true
+            {{- end }}
         - name: {{ .Chart.Name}}-redis
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
@@ -135,6 +152,18 @@ spec:
               value: {{ include "kace.temporalHost" . | quote }}
             - name: TEMPORAL_NAMESPACE
               value: {{ .Values.app_config.temporal_namespace | default "default" | quote }}
+            {{- if .Values.indexBucket.secretName }}
+            - name: QLEVER_INDEX_BUCKET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.indexBucket.secretName }}
+                  key: {{ .Values.indexBucket.accessKeyKey }}
+            - name: QLEVER_INDEX_BUCKET_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.indexBucket.secretName }}
+                  key: {{ .Values.indexBucket.secretKeyKey }}
+            {{- end }}
           resources:
             {{- toYaml .Values.temporal_worker.resources | nindent 12 }}
           volumeMounts:
@@ -149,6 +178,11 @@ spec:
             - mountPath: {{ .Values.app_config.shared_data_dir }}
               name: shared
             {{ end }}
+            {{- if .Values.remoteCluster.secretName }}
+            - mountPath: /etc/kace/remote
+              name: remote-kubeconfig
+              readOnly: true
+            {{- end }}
         {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
@@ -163,6 +197,11 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       volumes:
+        {{- if .Values.remoteCluster.secretName }}
+        - name: remote-kubeconfig
+          secret:
+            secretName: {{ .Values.remoteCluster.secretName }}
+        {{- end }}
         {{ if .Values.app_config.local_pvc_create }}
         - name: local
           persistentVolumeClaim:

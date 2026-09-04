@@ -1,7 +1,9 @@
 from temporalio import activity
+from temporalio.exceptions import ApplicationError
 from k8s.podman import JobMan
+from k8s import clients
 from k8s import fuseki_server_manager, ldf_server_manager
-from lakefs_util.io_util import resolve_commit, download_file_from_latest_tag, download_files, upload_files, clean_up_files, resolve_future_tag, get_lakefs_prefix_size, download_hdt_files, get_latest_commit, get_latest_tag, download_file_at_ref, object_exists, get_object_size
+from lakefs_util.io_util import resolve_commit, download_file_from_latest_tag, download_files, upload_files, clean_up_files, resolve_future_tag, get_lakefs_prefix_size, download_hdt_files, get_latest_commit, get_latest_tag, download_file_at_ref, object_exists, get_object_size, list_branches, list_tags, refs_differ, merge_branch, create_tag, read_object_text
 from canary.slack import slack_canary
 from canary.mail import mail_canary
 from models.lakefs_models import LakefsMergeActionModel, LakefTagCreationModel
@@ -34,7 +36,8 @@ async def run_k8s_job(job_type: str, job_name: str, repo: str, branch: str,
                       image: str = None, extra_pvcs: list = None,
                       read_only_default_mount: bool = False,
                       pod_security_context: dict = None,
-                      configmap_overrides: dict = None) -> str:
+                      configmap_overrides: dict = None,
+                      cluster: str = "local") -> str:
     logger.info(f"Starting K8s job: {job_name} ({job_type})")
     # Inject GH_TOKEN from config if not explicitly provided.
     # This keeps secrets out of Temporal workflow history.
@@ -42,7 +45,7 @@ async def run_k8s_job(job_type: str, job_name: str, repo: str, branch: str,
         env_vars = {}
     if "GH_TOKEN" not in env_vars and config.gh_token:
         env_vars["GH_TOKEN"] = config.gh_token
-    job_man = JobMan()
+    job_man = JobMan(cluster=cluster)
     job_man.run_job(
         job_type=job_type,
         job_name=job_name,
@@ -62,7 +65,7 @@ async def run_k8s_job(job_type: str, job_name: str, repo: str, branch: str,
     return job_name
 
 @activity.defn
-async def watch_k8s_job_sync(job_name: str, poll_interval: int = 5) -> None:
+async def watch_k8s_job_sync(job_name: str, poll_interval: int = 5, cluster: str = "local") -> None:
     """Poll a K8s Job until terminal. Heartbeats Temporal every poll so the
     activity can outlive worker restarts (paired with `heartbeat_timeout` on
     the workflow side) and won't be killed by start_to_close_timeout when the
@@ -74,9 +77,9 @@ async def watch_k8s_job_sync(job_name: str, poll_interval: int = 5) -> None:
     """
     from kubernetes import client as k8s_client
     import asyncio as _asyncio
-    logger.info(f"Watching K8s job: {job_name}")
-    job_man = JobMan()
-    batch_v1 = k8s_client.BatchV1Api()
+    logger.info(f"Watching K8s job: {job_name} (cluster={cluster})")
+    job_man = JobMan(cluster=cluster)
+    batch_v1 = clients.batch_v1(cluster)
     while True:
         try:
             job = await _asyncio.to_thread(
@@ -85,7 +88,11 @@ async def watch_k8s_job_sync(job_name: str, poll_interval: int = 5) -> None:
                 namespace=job_man.namespace,
             )
         except k8s_client.exceptions.ApiException as e:
-            raise Exception(f"Failed to fetch Job '{job_name}': {e}, likely the job was never created.")
+            # Non-retryable: re-running the watcher will not conjure the Job.
+            raise ApplicationError(
+                f"Failed to fetch Job '{job_name}': {e}, likely the job was never created.",
+                non_retryable=True,
+            )
         succeeded     = job.status.succeeded or 0
         failed        = job.status.failed or 0
         backoff_limit = job.spec.backoff_limit if job.spec.backoff_limit is not None else 6
@@ -99,7 +106,13 @@ async def watch_k8s_job_sync(job_name: str, poll_interval: int = 5) -> None:
             return
         if failed > backoff_limit:
             pod_info = await _asyncio.to_thread(job_man._get_pod_logs_for_job, job_name)
-            raise Exception(f"Job '{job_name}' failed after {failed} attempts.\n{pod_info}")
+            # The Job itself failed -- a terminal fact about the work, not a
+            # transient problem with watching it. Retrying would just re-read
+            # the same failure.
+            raise ApplicationError(
+                f"Job '{job_name}' failed after {failed} attempts.\n{pod_info}",
+                non_retryable=True,
+            )
         await _asyncio.sleep(poll_interval)
 
 
@@ -163,20 +176,117 @@ async def deploy_ldf(kg_config: dict, lakefs_action: dict) -> None:
     )
 
 
+def _qlever_names(kg_config: dict, lakefs_action: dict):
+    """(kg_name, version, pvc_name) — one place, used by both the index-fetch
+    Job and the Deployment so they always agree on the PVC."""
+    kg_name = KG(**kg_config).shortname
+    action = LakefTagCreationModel(**lakefs_action)
+    version = action.tag_id or (action.commit_id[:7] if action.commit_id else None)
+    sanitized_version = str(version).replace('.', '-').replace('_', '-')
+    return kg_name, version, f"frink-{kg_name}-qlever-pvc-{sanitized_version}"
+
+
+@activity.defn
+async def submit_qlever_index_fetch(kg_config: dict, lakefs_action: dict,
+                                    pvc_storage_size: str = "2Gi") -> str:
+    """Populate the QLever PVC with the index via a one-shot Job.
+
+    This used to be an initContainer in server-deployment.j2. It moved out so
+    the serving pod is a single container: no re-download on every restart, and
+    the init container's (larger) resource request stops being billed for the
+    pod's whole life. See the comment at the top of server-deployment.j2.
+
+    Returns the Job name to watch, or "" when there is nothing to fetch.
+    """
+    from k8s import qlever_server_manager
+    from kubernetes.client.rest import ApiException
+
+    kg_name, version, pvc_name = _qlever_names(kg_config, lakefs_action)
+    ns = clients.namespace(clients.REMOTE)
+    action = LakefTagCreationModel(**lakefs_action)
+    branch = action.tag_id or action.commit_id
+    deployment_name = f"frink-{kg_name}-qlever-server"
+    apps = clients.apps_v1(clients.REMOTE)
+
+    try:
+        dep = apps.read_namespaced_deployment(name=deployment_name, namespace=ns)
+    except ApiException:
+        dep = None
+
+    if dep and (dep.metadata.labels or {}).get("version") == str(version) \
+            and (dep.status.available_replicas or 0) > 0:
+        logger.info(f"{deployment_name} already serving {version}; skipping index fetch")
+        return ""
+
+    if dep and qlever_server_manager.use_private_pvc:
+        claims = {v.persistent_volume_claim.claim_name
+                  for v in (dep.spec.template.spec.volumes or [])
+                  if v.persistent_volume_claim}
+        if pvc_name in claims:
+            # RWO: an unhealthy pod still holding this volume would keep the Job
+            # Pending forever. Free it first, deploy_qlever scales back up.
+            logger.info(f"Scaling {deployment_name} to 0 to release {pvc_name}")
+            apps.patch_namespaced_deployment_scale(
+                name=deployment_name, namespace=ns,
+                body={"spec": {"replicas": 0}})
+            core = clients.core_v1(clients.REMOTE)
+            for _ in range(60):
+                pods = core.list_namespaced_pod(
+                    namespace=ns,
+                    label_selector=f"app={deployment_name}")
+                if not pods.items:
+                    break
+                await asyncio.sleep(5)
+
+    qlever_server_manager.create_or_update_pvc(
+        parameters={
+            "kg_name": kg_name,
+            "pvc_name": pvc_name,
+            "pvc_storage_size": pvc_storage_size,
+            "qlever_storage_class": config.qlever_storage_class,
+        },
+        annotations={"kg-name": kg_name, "version": str(version)},
+    )
+
+    # `.fetch-complete` makes a re-run of the same version a no-op instead of a
+    # full re-download.
+    script = (
+        f"set -e\n"
+        f"mkdir -p /data/{kg_name}\n"
+        f"if [ -f /data/{kg_name}/.fetch-complete ]; then echo 'index already present'; exit 0; fi\n"
+        f"/s5cmd --endpoint-url \"$LAKEFS_URL\" cp "
+        f"\"s3://{action.repository_id}/{branch}/qlever/*\" /data/{kg_name}/\n"
+        f"chmod -R 777 /data/{kg_name}\n"
+        f"touch /data/{kg_name}/.fetch-complete\n"
+    )
+
+    job_name = f"qlever-fetch-{pvc_name}"[:63].rstrip("-")
+    JobMan(cluster=clients.REMOTE).run_job(
+        job_type="qlever-fetch-job",
+        job_name=job_name,
+        repo=action.repository_id,
+        branch=branch,
+        command=["/bin/sh", "-c", script],
+        resources={"requests": {"cpu": "1", "memory": "1Gi"},
+                   "limits": {"cpu": "1", "memory": "1Gi"}},
+        env_vars={
+            "LAKEFS_URL": config.lakefs_url,
+            "AWS_ACCESS_KEY_ID": config.lakefs_access_key,
+            "AWS_SECRET_ACCESS_KEY": config.lakefs_secret_key,
+        },
+        extra_pvcs=[{"name": "index", "claim": pvc_name, "mount_path": "/data"}],
+    )
+    logger.info(f"Submitted index fetch job {job_name} for {kg_name}@{version}")
+    return job_name
+
+
 @activity.defn
 async def deploy_qlever(kg_config: dict, lakefs_action: dict, cpu: str = "1", memory: str = "2G", mem_size: str = None, pvc_storage_size: str = "2Gi", qlever_args: list = None) -> None:
     from k8s import qlever_server_manager
     kg_config_obj = KG(**kg_config)
     lakefs_action_obj = LakefTagCreationModel(**lakefs_action)
     
-    kg_name = kg_config_obj.shortname
-    
-    version = lakefs_action_obj.tag_id
-    if not version and lakefs_action_obj.commit_id:
-        version = lakefs_action_obj.commit_id[:7]
-    
-    # We sanitize the version to be DNS-1123 compatible (used in PVC naming)
-    sanitized_version = str(version).replace('.', '-').replace('_', '-')
+    kg_name, version, pvc_name = _qlever_names(kg_config, lakefs_action)
     
     annotations = {
         "kg-name": kg_name,
@@ -209,7 +319,7 @@ async def deploy_qlever(kg_config: dict, lakefs_action: dict, cpu: str = "1", me
     parameters = {
         "kg_name": kg_name,
         "version": version,
-        "pvc_name": f"frink-{kg_name}-qlever-pvc-{sanitized_version}",
+        "pvc_name": pvc_name,
         "lakefs_url": config.lakefs_url.replace("https://", "s3://").replace("http://", "s3://"),  # s5cmd s3 url
         "lakefs_access_key": config.lakefs_access_key,
         "lakefs_secret_key": config.lakefs_secret_key,
@@ -218,6 +328,7 @@ async def deploy_qlever(kg_config: dict, lakefs_action: dict, cpu: str = "1", me
         "host_name": config.frink_address,
         "pvc_storage_size": pvc_storage_size,
         "qlever_storage_class": config.qlever_storage_class,
+        "qlever_image": config.qlever_server_image,
         "mem_size": mem_size,
         "cpu": cpu,
         "memory": memory,
@@ -255,12 +366,16 @@ async def notify_slack(message: str, channel: str = None) -> None:
     slack_canary.send_message(message)
 
 @activity.defn
-async def notify_email_deployed(kg_name: str, version: str, recipient_email: str) -> None:
+async def notify_email_deployed(kg_name: str, version: str, recipient_email: str,
+                                kg_slug: str = "") -> None:
+    """kg_slug (registry shortname) is appended last so existing workflow
+    histories replay unchanged."""
     logger.info(f"Sending deployment email for {kg_name} {version} to {recipient_email}")
     mail_canary.send_deployed_email(
         kg_name=kg_name,
         version=version,
-        recipient_email=recipient_email
+        recipient_email=recipient_email,
+        kg_slug=kg_slug,
     )
 
 @activity.defn
@@ -276,6 +391,18 @@ async def resolve_commit_details(repo: str, commit_id: str) -> dict:
 
 @activity.defn
 async def download_hdt_files_activity(repo: str, branch: str, kg_name: str, hdt_path: str = 'hdt') -> None:
+    """Stage HDT files onto the shared PVC for the (legacy) Fuseki path.
+
+    This writes a PVC from inside the worker process, so it only works while the
+    worker and the server mounting that PVC share a cluster. The Fuseki path has
+    no HTTP trigger and is effectively retired; reviving it against a remote
+    serving cluster means turning this into a Job there, like ldf_sync_kg.py.
+    """
+    if not app_config.shared_data_dir:
+        raise RuntimeError(
+            "download_hdt_files_activity needs a local shared PVC (SHARED_DATA_DIR); "
+            "the Fuseki path is unsupported when serving runs on a remote cluster."
+        )
     logger.info(f"Downloading HDT files for {kg_name} from {repo}@{branch}")
     await download_hdt_files(repo, branch, kg_name, hdt_path)
 
@@ -638,13 +765,15 @@ def _ldf_sync_image() -> str:
     own image at runtime to stay aligned with the deployed kace version."""
     if app_config.ldf_sync_image:
         return app_config.ldf_sync_image
-    # Try to read this pod's own image so the sync Job runs the same kace code
+    # Try to read this pod's own image so the sync Job runs the same kace code.
+    # This pod is always local; the Job it names runs on the serving cluster, which
+    # is fine because the value is just a registry reference. Prefer setting
+    # LDF_SYNC_IMAGE explicitly -- introspection degrades silently to :latest.
     try:
-        from kubernetes import client as k8s_client
         pod_name = os.environ.get("HOSTNAME")
         if pod_name:
-            api = k8s_client.CoreV1Api()
-            pod = api.read_namespaced_pod(name=pod_name, namespace=app_config.k8s_namespace)
+            api = clients.core_v1(clients.LOCAL)
+            pod = api.read_namespaced_pod(name=pod_name, namespace=clients.namespace(clients.LOCAL))
             return pod.spec.containers[0].image
     except Exception as e:
         logger.warning(f"Could not auto-detect kace image, using fallback: {e}")
@@ -659,7 +788,7 @@ def _ldf_sync_env() -> list[dict]:
         {"name": "LAKEFS_SECRET_KEY", "value": app_config.lakefs_secret_key},
         {"name": "PYTHONPATH", "value": "/apps/src"},
         {"name": "LOCAL_DATA_DIR", "value": "/tmp"},
-        {"name": "K8S_NAMESPACE", "value": app_config.k8s_namespace},
+        {"name": "K8S_NAMESPACE", "value": clients.namespace(clients.REMOTE)},
     ]
 
 
@@ -696,8 +825,24 @@ async def resolve_kg_ref(repo: str) -> dict:
     return {"ref": ref, "tag": tag, "commit": commit}
 
 
+def kg_selected(shortname: str, repo: str, only_kg: list = None) -> bool:
+    """Does this KG match an `only_kg` subset filter?
+
+    Accepts EITHER the registry shortname or the lakeFS repo id, because the two
+    differ for several KGs (dreamkg / dream-kg, spoke-genelab-kg / ...) and the
+    caller has no way to know which one this code wanted. Matching only one of
+    them silently selected nothing, and the build then ran an indexer with no
+    input files -- which fails deep inside QLever with an assertion rather than
+    saying "your filter matched nothing".
+    """
+    if not only_kg:
+        return True
+    wanted = {str(k).strip().lower() for k in only_kg}
+    return (shortname or "").lower() in wanted or (repo or "").lower() in wanted
+
+
 @activity.defn
-async def resolve_qlever_refs(only_kg: list = None) -> dict:
+async def resolve_qlever_refs(only_kg: list = None, ref_overrides: dict = None) -> dict:
     """Resolve the ref+commit for every lakefs repo that feeds the federated
     qlever index. Each KG uses its latest semver tag (falling back to 'main'
     if no tags), except wikidata which always tracks 'main' (override). The
@@ -719,7 +864,10 @@ async def resolve_qlever_refs(only_kg: list = None) -> dict:
     """
     kg_config = await KGConfig.from_git()
     skip_repos = {'semopenalex'}
-    overrides = PER_REPO_LAKEFS_OVERRIDES
+    # ref_overrides is the caller's per-run pin (the weekly build points
+    # okn-void at its freshly-built, not-yet-tagged stable branch); it wins
+    # over the static table.
+    overrides = {**PER_REPO_LAKEFS_OVERRIDES, **(ref_overrides or {})}
 
     kg_refs: dict = {}
     skipped: list = []
@@ -728,9 +876,10 @@ async def resolve_qlever_refs(only_kg: list = None) -> dict:
             continue
         if kg.shortname in skip_repos:
             continue
-        if only_kg and kg.shortname not in only_kg:
+        repo_id = kg.frink_options.lakefs_repo
+        if not kg_selected(kg.shortname, repo_id, only_kg):
             continue
-        repo = kg.frink_options.lakefs_repo
+        repo = repo_id
         # Override lookup tries shortname first, then lakefs_repo. Lets the
         # dict be keyed however a future contributor finds clearest.
         override = overrides.get(kg.shortname) or overrides.get(repo) or {}
@@ -775,7 +924,7 @@ async def resolve_qlever_refs(only_kg: list = None) -> dict:
     # so the federated index always covers it.
     wikidata_repo = "wikidata"
     wikidata_shortname = "wikidata"
-    if not only_kg or wikidata_shortname in only_kg:
+    if kg_selected(wikidata_shortname, wikidata_repo, only_kg):
         wd_override = PER_REPO_LAKEFS_OVERRIDES.get(wikidata_shortname) or {}
         wd_ref = wd_override.get("ref", "main")
         wd_remote_path = wd_override.get("remote_path", "graph.nt.gz")
@@ -830,15 +979,108 @@ async def write_qlever_state(state: dict) -> None:
 
 
 @activity.defn
-async def create_qlever_index_pvc(build_id: str, image: str) -> str:
+async def create_qlever_index_pvc(build_id: str, image: str, cluster: str = "local") -> str:
     from k8s import qlever_pvc
-    return qlever_pvc.create_index_pvc(build_id, image)
+    remote = clients.effective(cluster) == clients.REMOTE
+    storage_class = (app_config.qlever_index_serving_storage_class if remote
+                     else app_config.qlever_index_pvc_storage_class)
+    size = (app_config.qlever_index_serving_pvc_size if remote else "") or app_config.qlever_index_pvc_size
+    return qlever_pvc.create_index_pvc(build_id, image, cluster=cluster,
+                                       storage_class=storage_class, size=size)
+
+
+def _index_bucket_env() -> dict:
+    """s5cmd talks to the transfer bucket over the S3 API (GCS supports it with
+    HMAC keys), so the same three vars work in both directions."""
+    return {
+        "BUCKET_ENDPOINT": app_config.qlever_index_bucket_endpoint,
+        "AWS_ACCESS_KEY_ID": app_config.qlever_index_bucket_access_key,
+        "AWS_SECRET_ACCESS_KEY": app_config.qlever_index_bucket_secret_key,
+    }
 
 
 @activity.defn
-async def gc_qlever_index_pvcs(state: dict, now_iso: str) -> dict:
+async def submit_qlever_index_upload(build_id: str, pvc_name: str) -> str:
+    """Ship a finished index off the build cluster into the transfer bucket.
+
+    The index is built where compute is cheap and served where the endpoint is,
+    which are no longer the same cluster. An RWO PVC cannot span clusters, so the
+    bytes travel through object storage: upload here, download on the serving
+    side (`submit_qlever_index_download`). Returns "" when no bucket is
+    configured, i.e. single-cluster mode, where the build PVC *is* the serving
+    PVC and nothing needs to move.
+    """
+    if not app_config.qlever_index_bucket:
+        logger.info("No qlever_index_bucket configured; skipping index upload (single-cluster mode).")
+        return ""
+
+    dest = f"s3://{app_config.qlever_index_bucket}/{build_id}/"
+    # --sp preserves nothing we need; a plain recursive cp of the index dir is
+    # enough, and s5cmd retries transport errors on its own.
+    script = (
+        "set -e\n"
+        f'/s5cmd --endpoint-url "$BUCKET_ENDPOINT" cp "/index/*" "{dest}"\n'
+        f'echo "{build_id}" > /tmp/done\n'
+        f'/s5cmd --endpoint-url "$BUCKET_ENDPOINT" cp /tmp/done "s3://{app_config.qlever_index_bucket}/{build_id}.complete"\n'
+    )
+    job_name = f"qlever-index-upload-{build_id}"[:63].rstrip("-")
+    JobMan(cluster=clients.LOCAL).run_job(
+        job_type="qlever-fetch-job",
+        job_name=job_name,
+        repo="qlever-index",
+        branch=build_id,
+        command=["/bin/sh", "-c", script],
+        resources={"requests": {"cpu": "2", "memory": "2Gi"},
+                   "limits": {"cpu": "2", "memory": "2Gi"}},
+        env_vars=_index_bucket_env(),
+        extra_pvcs=[{"name": "index", "claim": pvc_name, "mount_path": "/index", "read_only": True}],
+    )
+    logger.info(f"Submitted index upload job {job_name} -> {dest}")
+    return job_name
+
+
+@activity.defn
+async def submit_qlever_index_download(build_id: str, pvc_name: str) -> str:
+    """Pull a build out of the transfer bucket onto the serving cluster's PVC.
+
+    Mirror of `submit_qlever_index_upload`. The `.complete` marker written by the
+    uploader is checked first so a half-finished upload can never be served, and
+    a local marker makes a repeat run (e.g. rollback to a build already on disk)
+    finish in seconds instead of re-pulling terabytes.
+    """
+    if not app_config.qlever_index_bucket:
+        logger.info("No qlever_index_bucket configured; skipping index download (single-cluster mode).")
+        return ""
+
+    bucket = app_config.qlever_index_bucket
+    script = (
+        "set -e\n"
+        "if [ -f /index/.fetch-complete ]; then echo 'index already present'; exit 0; fi\n"
+        f'/s5cmd --endpoint-url "$BUCKET_ENDPOINT" cat "s3://{bucket}/{build_id}.complete" > /dev/null\n'
+        f'/s5cmd --endpoint-url "$BUCKET_ENDPOINT" cp "s3://{bucket}/{build_id}/*" /index/\n'
+        "chmod -R 777 /index\n"
+        "touch /index/.fetch-complete\n"
+    )
+    job_name = f"qlever-index-download-{build_id}"[:63].rstrip("-")
+    JobMan(cluster=clients.REMOTE).run_job(
+        job_type="qlever-fetch-job",
+        job_name=job_name,
+        repo="qlever-index",
+        branch=build_id,
+        command=["/bin/sh", "-c", script],
+        resources={"requests": {"cpu": "2", "memory": "2Gi"},
+                   "limits": {"cpu": "2", "memory": "2Gi"}},
+        env_vars=_index_bucket_env(),
+        extra_pvcs=[{"name": "index", "claim": pvc_name, "mount_path": "/index"}],
+    )
+    logger.info(f"Submitted index download job {job_name} for build {build_id}")
+    return job_name
+
+
+@activity.defn
+async def gc_qlever_index_pvcs(state: dict, now_iso: str, cluster: str = "local") -> dict:
     from k8s import qlever_pvc
-    return qlever_pvc.gc_index_pvcs(state, now_iso)
+    return qlever_pvc.gc_index_pvcs(state, now_iso, cluster=cluster)
 
 
 @activity.defn
@@ -942,13 +1184,18 @@ async def resolve_qlever_federation_build_id(use_previous: bool = False, build_i
             f"No build_id available for federation deploy (source={source}, state={state})."
         )
     pvc_name = qlever_pvc.pvc_name(chosen)
-    api = client.CoreV1Api()
-    try:
-        api.read_namespaced_persistent_volume_claim(name=pvc_name, namespace=app_config.k8s_namespace)
-    except ApiException as e:
-        if e.status == 404:
-            raise RuntimeError(f"Build PVC {pvc_name} not found for build_id={chosen}.")
-        raise
+    # With a transfer bucket configured the serving PVC does not exist yet -- the
+    # staging step downstream creates and fills it. Only demand it up front in
+    # single-cluster mode, where build and serving PVC are the same object.
+    if not app_config.qlever_index_bucket:
+        api = clients.core_v1(clients.REMOTE)
+        try:
+            api.read_namespaced_persistent_volume_claim(
+                name=pvc_name, namespace=clients.namespace(clients.REMOTE))
+        except ApiException as e:
+            if e.status == 404:
+                raise RuntimeError(f"Build PVC {pvc_name} not found for build_id={chosen}.")
+            raise
     image = state.get("image") or app_config.qlever_image
     return {
         "build_id":          chosen,
@@ -1017,3 +1264,122 @@ async def deploy_qlever_federation(build_id: str, pvc_name: str, image: str) -> 
         raise Exception(f"Federation qlever-server did not become healthy (build_id={build_id}).")
 
     return {"build_id": build_id, "pvc": pvc_name, "deployment": "frink-federation-qlever-server"}
+
+
+# ── okn-void release cycle ──────────────────────────────────────────────────
+# Every KG conversion pushes its void.nt into okn-void's stable_vX_Y_Z branch
+# (the repo's *next* tag). Getting those voids served takes three steps that
+# used to be manual: merge that branch to main (fires okn-void's own
+# post-merge action -> /convert_to_hdt), wait for the build, tag it (fires
+# post-create-tag -> /handle_tag_creation, which deploys the void endpoint).
+# The weekly federated build drives the first two so its index carries fresh
+# voids; the federation rollover drives the tag, so the void endpoint flips at
+# the same moment the federated index does.
+
+# okn-void's lakefs-action-hdt.yaml triggers on post-merge to `main`.
+VOID_MAIN_BRANCH = "main"
+_STABLE_BRANCH_RE = re.compile(r'^stable_v(\d+)_(\d+)_(\d+)$')
+
+
+def void_stable_version(branch: str) -> str:
+    """'stable_v0_0_15' -> 'v0.0.15'. Empty string for any other branch."""
+    m = _STABLE_BRANCH_RE.fullmatch((branch or '').strip())
+    return f"v{m.group(1)}.{m.group(2)}.{m.group(3)}" if m else ''
+
+
+def newest_void_stable(branches: list) -> tuple:
+    """Highest-versioned stable_v* branch as (branch, version), or ('', '')."""
+    pairs = [(b, void_stable_version(b)) for b in branches or []]
+    pairs = [p for p in pairs if p[1]]
+    if not pairs:
+        return '', ''
+    return max(pairs, key=lambda p: tuple(int(n) for n in p[1].lstrip('v').split('.')))
+
+
+def void_build_ready(void_nt_text: str, version: str) -> bool:
+    """True iff void/void.nt was built for `version`.
+
+    Same condition okn-void's pre-create-tag lua hook enforces, checked here so
+    a tag we create can never be rejected by it. The stable branch is cut from
+    main, which still carries the *previous* release's void/void.nt -- so
+    presence alone proves nothing; the pav:version triple is the proof.
+    """
+    return bool(void_nt_text) and f'<http://purl.org/pav/version> "{version}"' in void_nt_text
+
+
+@activity.defn
+async def sync_void_repo() -> dict:
+    """Merge okn-void's newest stable_v* branch into main.
+
+    The merge is what starts the void conversion: lakeFS fires okn-void's
+    post-merge webhook at /convert_to_hdt, which rebuilds hdt/nt/qlever from
+    every KG's void.nt and commits the artifacts back onto that same stable
+    branch (its version is not tagged yet, so upload_files reuses it).
+
+    Returns {} when there is nothing to sync -- no stable branch, or its
+    version is already tagged (i.e. released).
+    """
+    repo = app_config.void_repo.split(':')[0]
+    branch, version = newest_void_stable(await list_branches(repo))
+    if not branch:
+        logger.info(f"{repo}: no stable_v* branch; nothing to sync")
+        return {}
+    if version in await list_tags(repo):
+        logger.info(f"{repo}: {version} already tagged; nothing to sync")
+        return {}
+
+    merged = None
+    if await refs_differ(repo, VOID_MAIN_BRANCH, branch):
+        merged = await merge_branch(repo, branch, VOID_MAIN_BRANCH)
+        logger.info(f"{repo}: merged {branch} into {VOID_MAIN_BRANCH} ({merged})")
+    else:
+        # Already merged (a re-run, or a human did it). The conversion it
+        # triggered may still be running, so we still wait for artifacts.
+        logger.info(f"{repo}: {branch} already in {VOID_MAIN_BRANCH}; skipping merge")
+
+    return {"repo": repo, "stable_branch": branch, "version": version, "merge_commit": merged or ''}
+
+
+@activity.defn
+async def wait_void_artifacts(sync: dict, timeout_seconds: int = 14400, poll_seconds: int = 60) -> bool:
+    """Poll until okn-void's conversion has committed artifacts for this
+    version onto its stable branch. False on timeout (caller warns and builds
+    the federated index against the previous void release).
+    """
+    repo, branch, version = sync["repo"], sync["stable_branch"], sync["version"]
+    deadline = asyncio.get_event_loop().time() + timeout_seconds
+    while True:
+        text = await read_object_text(repo, branch, "void/void.nt")
+        if void_build_ready(text, version):
+            logger.info(f"{repo}@{branch}: artifacts for {version} are ready")
+            return True
+        if asyncio.get_event_loop().time() >= deadline:
+            logger.warning(f"{repo}@{branch}: no {version} artifacts after {timeout_seconds}s")
+            return False
+        activity.heartbeat({"repo": repo, "branch": branch, "version": version})
+        await asyncio.sleep(poll_seconds)
+
+
+@activity.defn
+async def tag_void_build() -> str:
+    """Tag okn-void's newest built stable branch, which fires its
+    post-create-tag action -> /handle_tag_creation (void endpoint + LDF).
+
+    Idempotent and self-guarding: returns "" when there is no stable branch,
+    when the version is already tagged, or when the branch does not carry
+    artifacts built for that version.
+    """
+    repo = app_config.void_repo.split(':')[0]
+    branch, version = newest_void_stable(await list_branches(repo))
+    if not branch:
+        return ''
+    if version in await list_tags(repo):
+        logger.info(f"{repo}: {version} already tagged")
+        return ''
+    if not void_build_ready(await read_object_text(repo, branch, "void/void.nt"), version):
+        logger.warning(f"{repo}@{branch}: not built for {version}; refusing to tag")
+        return ''
+    if not await create_tag(repo, version, branch):
+        return ''
+    logger.info(f"{repo}: tagged {version} at {branch}")
+    return version

@@ -114,7 +114,7 @@ class LDFServerDeploymentMananger(ServerDeploymentManager):
     def apply_pvc(self) -> None:
         body = self.get_pvc()
         name = body["metadata"]["name"]
-        api = client.CoreV1Api()
+        api = self._core()
         try:
             api.read_namespaced_persistent_volume_claim(name=name, namespace=self.namespace)
         except ApiException as e:
@@ -126,7 +126,7 @@ class LDFServerDeploymentMananger(ServerDeploymentManager):
     def apply_state_configmap(self, commits: Dict[str, str]) -> None:
         body = self.get_state_configmap(commits)
         name = body["metadata"]["name"]
-        api = client.CoreV1Api()
+        api = self._core()
         try:
             api.read_namespaced_config_map(name=name, namespace=self.namespace)
             api.patch_namespaced_config_map(name=name, namespace=self.namespace, body=body)
@@ -137,7 +137,7 @@ class LDFServerDeploymentMananger(ServerDeploymentManager):
                 raise
 
     def read_state_configmap(self) -> Dict[str, str]:
-        api = client.CoreV1Api()
+        api = self._core()
         try:
             cm = api.read_namespaced_config_map(name="frink-ldf-state", namespace=self.namespace)
             data = cm.data or {}
@@ -151,7 +151,7 @@ class LDFServerDeploymentMananger(ServerDeploymentManager):
     def submit_sync_job(self, repo: str, ref: str, shortname: str, image: str,
                         env_pairs: List[Dict[str, str]], hdt_path: str = "hdt") -> str:
         body = self.get_sync_job(repo, ref, shortname, image, env_pairs, hdt_path)
-        api = client.BatchV1Api()
+        api = self._batch()
         name = body["metadata"]["name"]
         # Delete any prior Job with same name so we can resubmit
         try:
@@ -165,7 +165,7 @@ class LDFServerDeploymentMananger(ServerDeploymentManager):
 
     def wait_for_job(self, job_name: str, timeout_seconds: int = 3600) -> bool:
         import time
-        api = client.BatchV1Api()
+        api = self._batch()
         deadline = time.time() + timeout_seconds
         while time.time() < deadline:
             job = api.read_namespaced_job(name=job_name, namespace=self.namespace)
@@ -180,7 +180,7 @@ class LDFServerDeploymentMananger(ServerDeploymentManager):
     def rolling_restart(self, config_hash: str) -> None:
         """Patch the LDF deployment so that the pod template config-hash annotation
         changes — triggers a controlled rolling update."""
-        api = client.AppsV1Api()
+        api = self._apps()
         body = {
             "spec": {
                 "template": {

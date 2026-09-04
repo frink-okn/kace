@@ -28,7 +28,15 @@ python src/temporal_server.py
 python -m temporal_app.worker
 ```
 
-There are no tests, lint config, or build script — `Dockerfile` just installs `requirements.txt` and copies `src/`. (`src/temporal_app/trigger_test.py` is a scratch script for manually starting workflows against a Temporal server, not a test suite.) Deployment is via the Helm chart in `helm-chart/kace/` (depends on the upstream `temporal` chart, disabled by default).
+Checks live in `tests/` — run them with `tests/run.sh` (or one at a time:
+`PYTHONPATH=src python tests/test_kg_subset.py`). They are plain assert scripts,
+not pytest: each is self-contained, exits non-zero on failure, and prints what it
+proved. Each one exists because something broke in production, and the docstring
+says which failure it prevents — read that before changing the behaviour it pins.
+There is no lint config or build script; `Dockerfile` just installs
+`requirements.txt` and copies `src/`. (`src/temporal_app/trigger_test.py` is a
+scratch script for manually starting workflows against a Temporal server, not a
+test.) Deployment is via the Helm chart in `helm-chart/kace/` (depends on the upstream `temporal` chart, disabled by default).
 
 ## High-level flow
 
@@ -87,11 +95,48 @@ Workflow phases (`src/temporal_app/workflows/qlever_index.py`):
 
 The workflow does NOT do server rollover — it ends at "PVC populated + state updated".
 
+**okn-void release cycle** (phase 0b + rollover): every KG conversion pushes its `void.nt` into `okn-void`'s `stable_vX_Y_Z` branch (the repo's *next* tag). The weekly build's phase 0b (`sync_void_repo`) merges that branch into `main`, which fires okn-void's own lakeFS post-merge action → `/convert_to_hdt`; `wait_void_artifacts` then polls until `void/void.nt` on the stable branch carries `pav:version "vX.Y.Z"` (the same condition okn-void's pre-create-tag lua hook enforces), and the run pins okn-void to that untagged stable branch via `resolve_qlever_refs(only_kg, ref_overrides)`. The release **tag** is created by `tag_void_build` at the end of a *serving* federation rollover — not by the build — so the void endpoint and the federated index start serving the same voids together. Every part is non-fatal (Slack warning, build continues on the previous void release), skipped for `only_kg` subset builds, and okn-void is excluded from phase-2 change detection so metadata-only churn never costs a 1.7-day rebuild.
+
 Per-repo input filters (gunzip pipe suffixes) and per-repo lakefs overrides (alternate remote path / ref) live as module-level dicts in `activities.py` (`PER_REPO_INPUT_FILTERS`, `PER_REPO_LAKEFS_OVERRIDES`). Add an entry there rather than special-casing inside `prepare_qlever_job_specs`.
 
 ## Federation server rollover (QLeverFederationDeploymentWorkflow)
 
 Consumes the index build's state: `resolve_qlever_federation_build_id` picks the PVC to serve — default `build_id_serving`, `use_previous=true` for n-1 rollback, explicit `build_id=` wins over both. `deploy_qlever_federation` then renders `templates/qlever-federation/*.j2` (via `qlever_federation_server_manager`) mounting that PVC into a qlever-server Deployment exposed at `/{config.qlever_federation_prefix}` (default `/federation`). Slack notified at start/success/failure.
+
+## Two-cluster mode (`src/k8s/clients.py`)
+
+KACE can run batch work on one cluster and manage the serving layer on another. Every k8s
+call passes a `cluster`: `clients.LOCAL` (shares a PVC with the worker process — conversion
+Jobs, the federated index build, `qlever_state`) or `clients.REMOTE` (what users query — the
+four `server_man*` managers, the per-KG qlever fetch Job, LDF, the serving index PVC).
+`clients.effective()` folds REMOTE into LOCAL whenever `REMOTE_KUBECONFIG` is unset, so
+single-cluster installs behave exactly as before — **always gate behavior on `effective()`,
+never on the raw argument**. `JobMan(cluster=...)` also drops the default `local_pvc_name`
+mount for remote Jobs. Activities `run_k8s_job` / `watch_k8s_job_sync` take `cluster` as
+their LAST parameter (workflows pass positionally; appending keeps histories replayable) —
+the watcher must be given the same value the submitter used.
+
+Grep gate after touching this layer: `grep -rn 'client\.\(Core\|Apps\|Batch\|Custom\|Networking\)[A-Za-z]*Api()' src`
+must return nothing. A missed site keeps working locally and fails only after cutover.
+
+**Index transfer**: an RWO PVC cannot span clusters, so `submit_qlever_index_upload` (build
+side, phase 6.5 of QLeverIndexWorkflow) pushes the finished index to `qlever_index_bucket`
+with a `{build_id}.complete` marker, and `submit_qlever_index_download` (serving side, inside
+QLeverFederationDeploymentWorkflow) pulls it onto the serving PVC before rollover. Both
+return `""` and are skipped when no bucket is configured. Remote PVC GC runs only when the
+deploy source is `serving` — GCing after a rollback would delete the PVC just mounted.
+
+Unsupported after a split: the Fuseki path (`download_hdt_files_activity` stages a PVC from
+inside the worker) and `_ldf_sync_image` pod introspection (set `ldf_sync_image`).
+
+## Webhook auth
+
+All endpoints sit behind `require_token` (`temporal_server.py`), an app-wide FastAPI
+dependency checking `X-KACE-Token` against `config.webhook_token` with
+`secrets.compare_digest`. No token configured = 503 for everything (fail closed). lakeFS
+sends it via `properties.headers` in the action yaml, reading `{{ ENV.LAKEFSACTIONS_KACE_TOKEN }}`
+— lakeFS blocks env vars without that prefix. New endpoints inherit the check automatically;
+do not add routes to a separate app or router without it.
 
 ## Key building blocks
 

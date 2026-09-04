@@ -29,7 +29,10 @@ class Config(BaseModel):
     smtp_server: str
     gh_token: str
     kg_config_url: str
-    stop_email: str
+    # Suppress outgoing mail. A bool, deliberately: as a raw string, the
+    # perfectly reasonable STOP_EMAIL="false" is truthy and silently keeps
+    # every notification switched off.
+    stop_email: bool
     temporal_host: str
     temporal_namespace: str
     networking_mode: str
@@ -46,6 +49,11 @@ class Config(BaseModel):
     ldf_sync_image: str
     ldf_host_name: str
     qlever_image: str
+    # Image for the per-KG QLever servers. Separate from qlever_image, which is
+    # the INDEXER (and the federated server): an index built by one qlever build
+    # is only readable by a server whose index format matches, so the two move
+    # independently and deliberately.
+    qlever_server_image: str
     qlever_indexer_cpu: str
     qlever_indexer_memory: str
     qlever_indexer_stxxl_memory: str
@@ -63,10 +71,40 @@ class Config(BaseModel):
     qlever_federation_index_basename: str
     qlever_federation_prefix: str
     qlever_federation_extra_args: list[str]
+    # Whether a finished index build kicks the federation server rollover.
+    # False on a build-only cluster that has nowhere to serve it from.
+    qlever_federation_rollover_enabled: bool
     qlever_index_schedule_enabled: bool
     qlever_index_schedule_id: str
     qlever_index_schedule_cron: str
     qlever_index_schedule_timezone: str
+    # Conversion memory derivation, applied when a webhook states only the pod
+    # size. Both consumers get a fraction of the pod because both flags are
+    # SOFT budgets for internal buffers, not caps on RSS.
+    hdtc_memory_fraction: float
+    stxxl_memory_fraction: float
+    # Shared secret required on every webhook request (X-KACE-Token).
+    webhook_token: str
+    # Serve every endpoint under this path prefix (e.g. "/kace"). Empty = root.
+    webhook_path_prefix: str
+    # Remote (GKE) cluster access. Empty = single-cluster mode, everything local.
+    remote_kubeconfig: str
+    remote_kube_context: str
+    remote_namespace: str
+    # Bucket used to ship the finished federated index from the build cluster
+    # to the serving cluster (GCS via its S3-compatible endpoint).
+    qlever_index_bucket: str
+    qlever_index_bucket_endpoint: str
+    qlever_index_bucket_access_key: str
+    qlever_index_bucket_secret_key: str
+    # Storage class for the SERVING index PVC on the remote cluster;
+    # qlever_index_pvc_storage_class is the build cluster's.
+    qlever_index_serving_storage_class: str
+    # Size of the SERVING index PVC. Empty = same as the build PVC. They differ
+    # because the build volume needs room for intermediates while the serving
+    # volume only holds the finished index -- and on the serving side that is
+    # premium SSD billed by the provisioned TiB, not by what is used.
+    qlever_index_serving_pvc_size: str
 
 
 
@@ -94,7 +132,7 @@ config = Config(
     smtp_port=int(os.environ.get('SMTP_PORT', 25)),
     gh_token=os.environ.get('GH_TOKEN', ''),
     kg_config_url=os.environ.get('KG_CONFIG_URL', 'https://raw.githubusercontent.com/frink-okn/okn-registry/refs/heads/main/docs/registry/kgs.yaml'),
-    stop_email=os.environ.get('STOP_EMAIL', ''),
+    stop_email=os.environ.get('STOP_EMAIL', '').strip().lower() in ('1', 'true', 'yes', 'on'),
     temporal_host=os.environ.get('TEMPORAL_HOST', 'localhost:7233'),
     temporal_namespace=os.environ.get('TEMPORAL_NAMESPACE', 'default'),
     networking_mode=os.environ.get('NETWORKING_MODE', 'ingress'),
@@ -111,6 +149,7 @@ config = Config(
     ldf_sync_image=os.environ.get('LDF_SYNC_IMAGE', ''),
     ldf_host_name=os.environ.get('LDF_HOST_NAME', 'frink.apps.renci.org'),
     qlever_image=os.environ.get('QLEVER_IMAGE', 'adfreiburg/qlever:commit-99b6db5'),
+    qlever_server_image=os.environ.get('QLEVER_SERVER_IMAGE', 'adfreiburg/qlever:commit-70c9f855d0'),
     qlever_indexer_cpu=os.environ.get('QLEVER_INDEXER_CPU', '8'),
     qlever_indexer_memory=os.environ.get('QLEVER_INDEXER_MEMORY', '100Gi'),
     qlever_indexer_stxxl_memory=os.environ.get('QLEVER_INDEXER_STXXL_MEMORY', '40G'),
@@ -128,9 +167,23 @@ config = Config(
     qlever_federation_index_basename=os.environ.get('QLEVER_FEDERATION_INDEX_BASENAME', 'frink'),
     qlever_federation_prefix=os.environ.get('QLEVER_FEDERATION_PREFIX', 'federation'),
     qlever_federation_extra_args=[a.strip() for a in os.environ.get('QLEVER_FEDERATION_EXTRA_ARGS', '').split(',') if a.strip()],
+    qlever_federation_rollover_enabled=os.environ.get('QLEVER_FEDERATION_ROLLOVER_ENABLED', 'true').lower() == 'true',
     qlever_index_schedule_enabled=os.environ.get('QLEVER_INDEX_SCHEDULE_ENABLED', 'true').lower() == 'true',
     qlever_index_schedule_id=os.environ.get('QLEVER_INDEX_SCHEDULE_ID', 'qlever-index-weekly'),
     # Default: Friday 18:00 (after 5PM) — multi-day build (~1d17h) finishes well before Sunday night.
     qlever_index_schedule_cron=os.environ.get('QLEVER_INDEX_SCHEDULE_CRON', '0 18 * * 5'),
     qlever_index_schedule_timezone=os.environ.get('QLEVER_INDEX_SCHEDULE_TIMEZONE', 'UTC'),
+    hdtc_memory_fraction=float(os.environ.get('HDTC_MEMORY_FRACTION', '0.75')),
+    stxxl_memory_fraction=float(os.environ.get('STXXL_MEMORY_FRACTION', '0.5')),
+    webhook_token=os.environ.get('WEBHOOK_TOKEN', ''),
+    webhook_path_prefix=os.environ.get('WEBHOOK_PATH_PREFIX', '').rstrip('/'),
+    remote_kubeconfig=os.environ.get('REMOTE_KUBECONFIG', ''),
+    remote_kube_context=os.environ.get('REMOTE_KUBE_CONTEXT', ''),
+    remote_namespace=os.environ.get('REMOTE_NAMESPACE', ''),
+    qlever_index_bucket=os.environ.get('QLEVER_INDEX_BUCKET', ''),
+    qlever_index_bucket_endpoint=os.environ.get('QLEVER_INDEX_BUCKET_ENDPOINT', 'https://storage.googleapis.com'),
+    qlever_index_bucket_access_key=os.environ.get('QLEVER_INDEX_BUCKET_ACCESS_KEY', ''),
+    qlever_index_bucket_secret_key=os.environ.get('QLEVER_INDEX_BUCKET_SECRET_KEY', ''),
+    qlever_index_serving_storage_class=os.environ.get('QLEVER_INDEX_SERVING_STORAGE_CLASS', 'premium-rwo'),
+    qlever_index_serving_pvc_size=os.environ.get('QLEVER_INDEX_SERVING_PVC_SIZE', ''),
 )

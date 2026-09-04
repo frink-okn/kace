@@ -1,6 +1,9 @@
 """Federated QLever index build.
 
 Phase 0: GC stale per-build PVCs (orphans + previous past 24h TTL).
+Phase 0b: sync okn-void (merge stable_v* -> main, wait for its conversion) so
+          this index carries every KG void.nt pushed since the last release.
+          Never fatal: on failure the build proceeds on the previous release.
 Phase 1: resolve refs+commits for every source repo (KGs + s2-builds).
 Phase 2: short-circuit if no source commit has changed since the serving build.
 Phase 3: allocate a new per-build RWO premium-ssd output PVC.
@@ -16,6 +19,7 @@ import asyncio
 from datetime import timedelta
 from temporalio import workflow
 from temporalio.common import RetryPolicy, WorkflowIDReusePolicy
+from temporalio.exceptions import ApplicationError
 
 with workflow.unsafe.imports_passed_through():
     from ..activities import (
@@ -28,6 +32,9 @@ with workflow.unsafe.imports_passed_through():
         write_qlever_state,
         create_qlever_index_pvc,
         gc_qlever_index_pvcs,
+        submit_qlever_index_upload,
+        sync_void_repo,
+        wait_void_artifacts,
         notify_slack,
     )
     from config import config as app_config
@@ -47,9 +54,24 @@ JOB_SUBMIT_TIMEOUT  = timedelta(minutes=10)
 # Multi-day federated index build; watch activity heartbeats so worker bounces
 # do not lose progress.
 BUILD_WATCH_TIMEOUT = timedelta(days=7)
+# Shipping a multi-hundred-GB index into the transfer bucket is long but not
+# multi-day; heartbeats make the exact number uncritical.
+UPLOAD_WATCH_TIMEOUT = timedelta(days=1)
 HEARTBEAT_TIMEOUT   = timedelta(minutes=5)
 
 NO_RETRY = RetryPolicy(maximum_attempts=1)
+# Watching a K8s Job is pure polling, so it is safe to re-attach. This matters
+# because the watcher heartbeats precisely so a multi-day build can outlive a
+# worker restart -- but with maximum_attempts=1 a heartbeat timeout is terminal,
+# and a routine `rollout restart` kills the workflow instead. Terminal outcomes
+# (Job failed, Job missing) are raised non-retryable by the activity, so this
+# only retries the act of watching.
+WATCH_RETRY = RetryPolicy(
+    initial_interval=timedelta(seconds=10),
+    backoff_coefficient=2.0,
+    maximum_interval=timedelta(minutes=1),
+    maximum_attempts=20,
+)
 # Downloads are now resumable-on-retry only in the sense that the activity
 # re-runs from scratch; per-part retries inside the activity handle transient
 # transport errors. Limit Temporal-level retries so a truly bad object does
@@ -60,6 +82,11 @@ DOWNLOAD_RETRY = RetryPolicy(
     backoff_coefficient=2.0,
     maximum_interval=timedelta(minutes=10),
 )
+
+# okn-void's own conversion is small (tens of MB) but queues behind whatever
+# else the cluster is converting; 4h of polling, then the build goes ahead on
+# the previous void release.
+VOID_WAIT_TIMEOUT = timedelta(hours=4)
 
 INDEX_MOUNT_PATH = "/index"
 SHARED_VOLUME_NAME = "data"
@@ -92,6 +119,62 @@ class QLeverIndexWorkflow:
             )
             raise
 
+    async def _sync_void(self) -> dict:
+        """Merge + build okn-void, returning the ref override that pins it to
+        the fresh build ({} if there is nothing to sync or the sync failed).
+
+        Deliberately non-fatal: a metadata graph must never cost the week's
+        multi-day index build. Every failure path Slacks a warning and lets the
+        build fall back to okn-void's latest tag.
+        """
+        try:
+            sync = await workflow.execute_activity(
+                sync_void_repo,
+                start_to_close_timeout=QUICK_TIMEOUT,
+                retry_policy=NO_RETRY,
+            )
+            if not sync:
+                return {}
+            ready = await workflow.execute_activity(
+                wait_void_artifacts,
+                args=[sync],
+                start_to_close_timeout=VOID_WAIT_TIMEOUT,
+                heartbeat_timeout=HEARTBEAT_TIMEOUT,
+                retry_policy=NO_RETRY,
+            )
+            if not ready:
+                await workflow.execute_activity(
+                    notify_slack,
+                    args=[
+                        f"⚠️ okn-void {sync['version']} did not finish building in time; "
+                        f"federated index will use the previous void release."
+                    ],
+                    start_to_close_timeout=QUICK_TIMEOUT,
+                    retry_policy=NO_RETRY,
+                )
+                return {}
+            await workflow.execute_activity(
+                notify_slack,
+                args=[
+                    f"🧾 okn-void {sync['version']} built on `{sync['stable_branch']}`; "
+                    f"federated index will include it (tag created after federation rollover)."
+                ],
+                start_to_close_timeout=QUICK_TIMEOUT,
+                retry_policy=NO_RETRY,
+            )
+            return {sync["repo"]: {"ref": sync["stable_branch"]}}
+        except Exception as e:
+            await workflow.execute_activity(
+                notify_slack,
+                args=[
+                    f"⚠️ okn-void sync failed ({e}); federated index will use the "
+                    f"previous void release."
+                ],
+                start_to_close_timeout=QUICK_TIMEOUT,
+                retry_policy=NO_RETRY,
+            )
+            return {}
+
     async def _run_phases(self, only_kg, build_id, now_iso) -> dict:
         # ── Phase 0: GC ────────────────────────────────────────────────────
         state = await workflow.execute_activity(
@@ -111,10 +194,18 @@ class QLeverIndexWorkflow:
             state["build_id_previous"] = None
             state["previous_marked_at"] = None
 
+        # ── Phase 0b: sync okn-void ───────────────────────────────────────
+        # The void graph describes the KGs this index serves, so it is built
+        # first and pinned to its stable branch here -- the release tag is
+        # created later, by the federation rollover, so the void endpoint and
+        # the federated index start serving the same voids at the same time.
+        # Subset builds are a debugging tool; they must not advance a release.
+        ref_overrides = {} if only_kg else await self._sync_void()
+
         # ── Phase 1: resolve refs ─────────────────────────────────────────
         refs = await workflow.execute_activity(
             resolve_qlever_refs,
-            args=[only_kg],
+            args=[only_kg, ref_overrides],
             start_to_close_timeout=timedelta(minutes=15),
             retry_policy=NO_RETRY,
         )
@@ -135,9 +226,33 @@ class QLeverIndexWorkflow:
                 retry_policy=NO_RETRY,
             )
 
+        # An empty source set means the run would invoke IndexBuilderMain with
+        # no -f arguments, which fails deep inside QLever with
+        # `!config.inputFiles_.empty()` after the PVC and Job already exist.
+        # Nearly always a subset filter that matched nothing.
+        if not refs["kg_refs"]:
+            detail = f" (subset: {', '.join(only_kg)})" if only_kg else ""
+            msg = (
+                f"❌ QLever federated index build {build_id}: no source repos "
+                f"resolved{detail}. Nothing to index -- check the subset names "
+                f"against the registry (shortname or lakefs repo id both work)."
+            )
+            await workflow.execute_activity(
+                notify_slack, args=[msg],
+                start_to_close_timeout=QUICK_TIMEOUT, retry_policy=NO_RETRY,
+            )
+            raise ApplicationError(msg, non_retryable=True)
+
         # ── Phase 2: change detection ─────────────────────────────────────
+        # okn-void is excluded from change detection on purpose: its commit
+        # moves every time any KG converts, tagged or not, so including it
+        # would spend a ~1.7-day rebuild on a metadata-only change. The fresh
+        # voids still go into any build that happens for a real reason, and
+        # otherwise ride the next one.
+        void_repo = app_config.void_repo.split(':')[0]
         current_commits = {
-            **{repo: meta["commit"] for repo, meta in refs["kg_refs"].items()},
+            **{repo: meta["commit"] for repo, meta in refs["kg_refs"].items()
+               if repo != void_repo},
             refs["s2_repo"]: refs["s2_commit"],
         }
         if (
@@ -249,8 +364,28 @@ class QLeverIndexWorkflow:
             args=[job_name],
             start_to_close_timeout=BUILD_WATCH_TIMEOUT,
             heartbeat_timeout=HEARTBEAT_TIMEOUT,
+            retry_policy=WATCH_RETRY,
+        )
+
+        # ── Phase 6.5: ship the index to the serving cluster ──────────────
+        # The index is built here and served elsewhere; an RWO PVC cannot cross
+        # a cluster boundary, so the bytes go through a transfer bucket. No-op
+        # (returns "") in single-cluster mode. State is written only after this
+        # succeeds, so a failed transfer never marks a build as servable.
+        upload_job = await workflow.execute_activity(
+            submit_qlever_index_upload,
+            args=[build_id, pvc_name],
+            start_to_close_timeout=JOB_SUBMIT_TIMEOUT,
             retry_policy=NO_RETRY,
         )
+        if upload_job:
+            await workflow.execute_activity(
+                watch_k8s_job_sync,
+                args=[upload_job],
+                start_to_close_timeout=UPLOAD_WATCH_TIMEOUT,
+                heartbeat_timeout=HEARTBEAT_TIMEOUT,
+                retry_policy=WATCH_RETRY,
+            )
 
         # ── Phase 7: write new state ──────────────────────────────────────
         old_serving = state.get("build_id_serving")
@@ -283,6 +418,19 @@ class QLeverIndexWorkflow:
         # TERMINATE_IF_RUNNING so a stale rollover from a prior build is
         # superseded by the fresh one (matches the single-flight contract
         # also enforced by the /trigger_qlever_federation_deploy endpoint).
+        if not app_config.qlever_federation_rollover_enabled:
+            workflow.logger.info(
+                "Federation rollover disabled; index build ends at 'PVC populated'."
+            )
+            return {
+                "status":         "built",
+                "build_id":       build_id,
+                "pvc":            pvc_name,
+                "gc_report":      gc_report,
+                "previous_build": old_serving,
+                "rollover":       "disabled",
+            }
+
         await workflow.start_child_workflow(
             "QLeverFederationDeploymentWorkflow",
             args=[False, None],

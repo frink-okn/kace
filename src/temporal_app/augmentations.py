@@ -97,18 +97,30 @@ def build_merge_command(hdt_file: str, nt_file: str, aug_files: list,
     """Fold the aug triples into both artifacts.
 
     `hdtc create` accepts HDT files as inputs, so the merge reuses the existing
-    dictionary instead of reparsing; --index regenerates {hdt}.index.v1-1.
-    Appending the gzipped aug files to nt/graph.nt.gz is valid gzip
-    (concatenated members). Aug files are listed explicitly — never globbed —
-    so stale files from a previous run cannot leak in.
+    dictionary instead of reparsing. Appending the gzipped aug files to
+    nt/graph.nt.gz is valid gzip (concatenated members). Aug files are listed
+    explicitly — never globbed — so stale files from a previous run cannot leak
+    in.
+
+    Two details that are easy to get wrong:
+
+    * `--index` writes to `{output-with-its-extension-replaced-by-hdt}.index.v1-1`,
+      not `{output}.index.v1-1`. The merged output therefore ends in `.hdt` so
+      the two names coincide and the `mv` below finds its file.
+    * A step whose `from` predicate matches nothing leaves an empty aug file;
+      merging that is a multi-hour no-op, so the job exits early instead.
     """
     aug = " ".join(aug_files)
-    merged = f"{hdt_file}.merged"
+    merged = f"{hdt_file}.merged.hdt"
     return (
         "set -euo pipefail; "
+        # Inside the substitution the pipeline's own status (gzip taking
+        # SIGPIPE from head under pipefail) is discarded; only emptiness counts.
+        f"""if [ -z "$(gzip -dc {aug} | head -c1)" ]; then """
+        "echo 'augmentations produced no triples; skipping merge'; exit 0; fi; "
         f"hdtc create {hdt_file} {aug} --temp-dir {temp_dir} --index "
         f"--memory-limit {memory_limit} -v --output {merged}; "
-        f"mv {merged} {hdt_file}; "
         f"mv {merged}.index.v1-1 {hdt_file}.index.v1-1; "
+        f"mv {merged} {hdt_file}; "
         f"cat {aug} >> {nt_file}"
     )

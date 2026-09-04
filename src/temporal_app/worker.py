@@ -10,6 +10,7 @@ from .activities import (
     deploy_fuseki,
     deploy_ldf,
     deploy_qlever, # Added
+    submit_qlever_index_fetch,
     notify_slack,
     notify_email_deployed,
     resolve_commit_details,
@@ -36,6 +37,8 @@ from .activities import (
     write_qlever_state,
     create_qlever_index_pvc,
     gc_qlever_index_pvcs,
+    submit_qlever_index_upload,
+    submit_qlever_index_download,
     read_ldf_state,
     write_ldf_state,
     ensure_ldf_pvc,
@@ -44,6 +47,9 @@ from .activities import (
     apply_ldf_config_and_rollout,
     resolve_qlever_federation_build_id,
     deploy_qlever_federation,
+    sync_void_repo,
+    wait_void_artifacts,
+    tag_void_build,
 )
 
 from .workflows import (
@@ -91,6 +97,7 @@ async def main():
             deploy_fuseki,
             deploy_ldf,
             deploy_qlever, # Added
+            submit_qlever_index_fetch,
             notify_slack,
             notify_email_deployed,
             resolve_commit_details,
@@ -117,6 +124,8 @@ async def main():
             write_qlever_state,
             create_qlever_index_pvc,
             gc_qlever_index_pvcs,
+            submit_qlever_index_upload,
+            submit_qlever_index_download,
             read_ldf_state,
             write_ldf_state,
             ensure_ldf_pvc,
@@ -125,6 +134,9 @@ async def main():
             apply_ldf_config_and_rollout,
             resolve_qlever_federation_build_id,
             deploy_qlever_federation,
+            sync_void_repo,
+            wait_void_artifacts,
+            tag_void_build,
         ],
     )
     

@@ -25,6 +25,7 @@ with workflow.unsafe.imports_passed_through():
         watch_k8s_job_sync,
         read_qlever_state,
         gc_qlever_index_pvcs,
+        tag_void_build,
         notify_slack,
     )
 
@@ -122,6 +123,35 @@ class QLeverFederationDeploymentWorkflow:
             start_to_close_timeout=QUICK_TIMEOUT,
             retry_policy=NO_RETRY,
         )
+
+        # okn-void's release tag is created here, not by the index build, so the
+        # void endpoint starts serving the same voids this index carries. The
+        # tag fires okn-void's post-create-tag action (/handle_tag_creation),
+        # which deploys the void endpoint and syncs LDF.
+        #
+        # Only on a serving rollover: a rollback to n-1 must not advance the
+        # void release. Never fatal -- the federation is already up.
+        if resolved["source"] == "serving":
+            try:
+                void_tag = await workflow.execute_activity(
+                    tag_void_build,
+                    start_to_close_timeout=QUICK_TIMEOUT,
+                    retry_policy=NO_RETRY,
+                )
+                if void_tag:
+                    await workflow.execute_activity(
+                        notify_slack,
+                        args=[f"🏷️ okn-void tagged {void_tag}; void endpoint rollout started."],
+                        start_to_close_timeout=QUICK_TIMEOUT,
+                        retry_policy=NO_RETRY,
+                    )
+            except Exception as e:
+                await workflow.execute_activity(
+                    notify_slack,
+                    args=[f"⚠️ okn-void tag after federation rollover failed: {e}"],
+                    start_to_close_timeout=QUICK_TIMEOUT,
+                    retry_policy=NO_RETRY,
+                )
 
         # Serving PVCs are allocated on the remote cluster, so they are GC'd from
         # here (the build cluster's GC only sees its own).

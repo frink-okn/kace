@@ -95,6 +95,8 @@ Workflow phases (`src/temporal_app/workflows/qlever_index.py`):
 
 The workflow does NOT do server rollover — it ends at "PVC populated + state updated".
 
+**okn-void release cycle** (phase 0b + rollover): every KG conversion pushes its `void.nt` into `okn-void`'s `stable_vX_Y_Z` branch (the repo's *next* tag). The weekly build's phase 0b (`sync_void_repo`) merges that branch into `main`, which fires okn-void's own lakeFS post-merge action → `/convert_to_hdt`; `wait_void_artifacts` then polls until `void/void.nt` on the stable branch carries `pav:version "vX.Y.Z"` (the same condition okn-void's pre-create-tag lua hook enforces), and the run pins okn-void to that untagged stable branch via `resolve_qlever_refs(only_kg, ref_overrides)`. The release **tag** is created by `tag_void_build` at the end of a *serving* federation rollover — not by the build — so the void endpoint and the federated index start serving the same voids together. Every part is non-fatal (Slack warning, build continues on the previous void release), skipped for `only_kg` subset builds, and okn-void is excluded from phase-2 change detection so metadata-only churn never costs a 1.7-day rebuild.
+
 Per-repo input filters (gunzip pipe suffixes) and per-repo lakefs overrides (alternate remote path / ref) live as module-level dicts in `activities.py` (`PER_REPO_INPUT_FILTERS`, `PER_REPO_LAKEFS_OVERRIDES`). Add an entry there rather than special-casing inside `prepare_qlever_job_specs`.
 
 ## Federation server rollover (QLeverFederationDeploymentWorkflow)

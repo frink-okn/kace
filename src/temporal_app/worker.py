@@ -47,6 +47,9 @@ from .activities import (
     apply_ldf_config_and_rollout,
     resolve_qlever_federation_build_id,
     deploy_qlever_federation,
+    sync_void_repo,
+    wait_void_artifacts,
+    tag_void_build,
 )
 
 from .workflows import (
@@ -131,6 +134,9 @@ async def main():
             apply_ldf_config_and_rollout,
             resolve_qlever_federation_build_id,
             deploy_qlever_federation,
+            sync_void_repo,
+            wait_void_artifacts,
+            tag_void_build,
         ],
     )
     

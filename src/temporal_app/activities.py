@@ -3,7 +3,7 @@ from temporalio.exceptions import ApplicationError
 from k8s.podman import JobMan
 from k8s import clients
 from k8s import fuseki_server_manager, ldf_server_manager
-from lakefs_util.io_util import resolve_commit, download_file_from_latest_tag, download_files, upload_files, clean_up_files, resolve_future_tag, get_lakefs_prefix_size, download_hdt_files, get_latest_commit, get_latest_tag, download_file_at_ref, object_exists, get_object_size
+from lakefs_util.io_util import resolve_commit, download_file_from_latest_tag, download_files, upload_files, clean_up_files, resolve_future_tag, get_lakefs_prefix_size, download_hdt_files, get_latest_commit, get_latest_tag, download_file_at_ref, object_exists, get_object_size, list_branches, list_tags, refs_differ, merge_branch, create_tag, read_object_text
 from canary.slack import slack_canary
 from canary.mail import mail_canary
 from models.lakefs_models import LakefsMergeActionModel, LakefTagCreationModel
@@ -842,7 +842,7 @@ def kg_selected(shortname: str, repo: str, only_kg: list = None) -> bool:
 
 
 @activity.defn
-async def resolve_qlever_refs(only_kg: list = None) -> dict:
+async def resolve_qlever_refs(only_kg: list = None, ref_overrides: dict = None) -> dict:
     """Resolve the ref+commit for every lakefs repo that feeds the federated
     qlever index. Each KG uses its latest semver tag (falling back to 'main'
     if no tags), except wikidata which always tracks 'main' (override). The
@@ -864,7 +864,10 @@ async def resolve_qlever_refs(only_kg: list = None) -> dict:
     """
     kg_config = await KGConfig.from_git()
     skip_repos = {'semopenalex'}
-    overrides = PER_REPO_LAKEFS_OVERRIDES
+    # ref_overrides is the caller's per-run pin (the weekly build points
+    # okn-void at its freshly-built, not-yet-tagged stable branch); it wins
+    # over the static table.
+    overrides = {**PER_REPO_LAKEFS_OVERRIDES, **(ref_overrides or {})}
 
     kg_refs: dict = {}
     skipped: list = []
@@ -1261,3 +1264,122 @@ async def deploy_qlever_federation(build_id: str, pvc_name: str, image: str) -> 
         raise Exception(f"Federation qlever-server did not become healthy (build_id={build_id}).")
 
     return {"build_id": build_id, "pvc": pvc_name, "deployment": "frink-federation-qlever-server"}
+
+
+# ── okn-void release cycle ──────────────────────────────────────────────────
+# Every KG conversion pushes its void.nt into okn-void's stable_vX_Y_Z branch
+# (the repo's *next* tag). Getting those voids served takes three steps that
+# used to be manual: merge that branch to main (fires okn-void's own
+# post-merge action -> /convert_to_hdt), wait for the build, tag it (fires
+# post-create-tag -> /handle_tag_creation, which deploys the void endpoint).
+# The weekly federated build drives the first two so its index carries fresh
+# voids; the federation rollover drives the tag, so the void endpoint flips at
+# the same moment the federated index does.
+
+# okn-void's lakefs-action-hdt.yaml triggers on post-merge to `main`.
+VOID_MAIN_BRANCH = "main"
+_STABLE_BRANCH_RE = re.compile(r'^stable_v(\d+)_(\d+)_(\d+)$')
+
+
+def void_stable_version(branch: str) -> str:
+    """'stable_v0_0_15' -> 'v0.0.15'. Empty string for any other branch."""
+    m = _STABLE_BRANCH_RE.fullmatch((branch or '').strip())
+    return f"v{m.group(1)}.{m.group(2)}.{m.group(3)}" if m else ''
+
+
+def newest_void_stable(branches: list) -> tuple:
+    """Highest-versioned stable_v* branch as (branch, version), or ('', '')."""
+    pairs = [(b, void_stable_version(b)) for b in branches or []]
+    pairs = [p for p in pairs if p[1]]
+    if not pairs:
+        return '', ''
+    return max(pairs, key=lambda p: tuple(int(n) for n in p[1].lstrip('v').split('.')))
+
+
+def void_build_ready(void_nt_text: str, version: str) -> bool:
+    """True iff void/void.nt was built for `version`.
+
+    Same condition okn-void's pre-create-tag lua hook enforces, checked here so
+    a tag we create can never be rejected by it. The stable branch is cut from
+    main, which still carries the *previous* release's void/void.nt -- so
+    presence alone proves nothing; the pav:version triple is the proof.
+    """
+    return bool(void_nt_text) and f'<http://purl.org/pav/version> "{version}"' in void_nt_text
+
+
+@activity.defn
+async def sync_void_repo() -> dict:
+    """Merge okn-void's newest stable_v* branch into main.
+
+    The merge is what starts the void conversion: lakeFS fires okn-void's
+    post-merge webhook at /convert_to_hdt, which rebuilds hdt/nt/qlever from
+    every KG's void.nt and commits the artifacts back onto that same stable
+    branch (its version is not tagged yet, so upload_files reuses it).
+
+    Returns {} when there is nothing to sync -- no stable branch, or its
+    version is already tagged (i.e. released).
+    """
+    repo = app_config.void_repo.split(':')[0]
+    branch, version = newest_void_stable(await list_branches(repo))
+    if not branch:
+        logger.info(f"{repo}: no stable_v* branch; nothing to sync")
+        return {}
+    if version in await list_tags(repo):
+        logger.info(f"{repo}: {version} already tagged; nothing to sync")
+        return {}
+
+    merged = None
+    if await refs_differ(repo, VOID_MAIN_BRANCH, branch):
+        merged = await merge_branch(repo, branch, VOID_MAIN_BRANCH)
+        logger.info(f"{repo}: merged {branch} into {VOID_MAIN_BRANCH} ({merged})")
+    else:
+        # Already merged (a re-run, or a human did it). The conversion it
+        # triggered may still be running, so we still wait for artifacts.
+        logger.info(f"{repo}: {branch} already in {VOID_MAIN_BRANCH}; skipping merge")
+
+    return {"repo": repo, "stable_branch": branch, "version": version, "merge_commit": merged or ''}
+
+
+@activity.defn
+async def wait_void_artifacts(sync: dict, timeout_seconds: int = 14400, poll_seconds: int = 60) -> bool:
+    """Poll until okn-void's conversion has committed artifacts for this
+    version onto its stable branch. False on timeout (caller warns and builds
+    the federated index against the previous void release).
+    """
+    repo, branch, version = sync["repo"], sync["stable_branch"], sync["version"]
+    deadline = asyncio.get_event_loop().time() + timeout_seconds
+    while True:
+        text = await read_object_text(repo, branch, "void/void.nt")
+        if void_build_ready(text, version):
+            logger.info(f"{repo}@{branch}: artifacts for {version} are ready")
+            return True
+        if asyncio.get_event_loop().time() >= deadline:
+            logger.warning(f"{repo}@{branch}: no {version} artifacts after {timeout_seconds}s")
+            return False
+        activity.heartbeat({"repo": repo, "branch": branch, "version": version})
+        await asyncio.sleep(poll_seconds)
+
+
+@activity.defn
+async def tag_void_build() -> str:
+    """Tag okn-void's newest built stable branch, which fires its
+    post-create-tag action -> /handle_tag_creation (void endpoint + LDF).
+
+    Idempotent and self-guarding: returns "" when there is no stable branch,
+    when the version is already tagged, or when the branch does not carry
+    artifacts built for that version.
+    """
+    repo = app_config.void_repo.split(':')[0]
+    branch, version = newest_void_stable(await list_branches(repo))
+    if not branch:
+        return ''
+    if version in await list_tags(repo):
+        logger.info(f"{repo}: {version} already tagged")
+        return ''
+    if not void_build_ready(await read_object_text(repo, branch, "void/void.nt"), version):
+        logger.warning(f"{repo}@{branch}: not built for {version}; refusing to tag")
+        return ''
+    if not await create_tag(repo, version, branch):
+        return ''
+    logger.info(f"{repo}: tagged {version} at {branch}")
+    return version

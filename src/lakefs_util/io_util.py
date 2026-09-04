@@ -755,3 +755,112 @@ if __name__ == '__main__':
     asyncio.run(
         download_files("biobricks-mesh-kg", "v0.0.1")
     )
+
+# ── okn-void sync helpers ────────────────────────────────────────────────────
+# Small REST wrappers (same cookie-auth style as get_latest_commit) used to
+# drive the okn-void release cycle from the weekly federated build: merge the
+# accumulated stable_v* branch to main, then tag it once federation rolls over.
+
+async def list_branches(repo: str) -> List[str]:
+    """All branch names in `repo` (follows pagination)."""
+    cookie = await login_and_get_cookies(config.lakefs_url, config.lakefs_access_key, config.lakefs_secret_key)
+    branches, after = [], ''
+    async with aiohttp.ClientSession(cookies=cookie) as session:
+        while True:
+            url = (f'{config.lakefs_url}/api/v1/repositories/{urllib.parse.quote_plus(repo)}'
+                   f'/branches?amount=1000&after={urllib.parse.quote_plus(after)}')
+            response = await session.get(url)
+            if response.status != 200:
+                raise Exception(f"Failed to list branches for {repo}: HTTP {response.status}")
+            data = await response.json()
+            branches += [b['id'] for b in data.get('results') or []]
+            pagination = data.get('pagination') or {}
+            if not pagination.get('has_more'):
+                return branches
+            after = pagination.get('next_offset') or ''
+
+
+async def list_tags(repo: str) -> List[str]:
+    """All tag names in `repo` (follows pagination)."""
+    cookie = await login_and_get_cookies(config.lakefs_url, config.lakefs_access_key, config.lakefs_secret_key)
+    tags, after = [], ''
+    async with aiohttp.ClientSession(cookies=cookie) as session:
+        while True:
+            url = (f'{config.lakefs_url}/api/v1/repositories/{urllib.parse.quote_plus(repo)}'
+                   f'/tags?amount=1000&after={urllib.parse.quote_plus(after)}')
+            response = await session.get(url)
+            if response.status != 200:
+                raise Exception(f"Failed to list tags for {repo}: HTTP {response.status}")
+            data = await response.json()
+            tags += [t['id'] for t in data.get('results') or []]
+            pagination = data.get('pagination') or {}
+            if not pagination.get('has_more'):
+                return tags
+            after = pagination.get('next_offset') or ''
+
+
+async def refs_differ(repo: str, left: str, right: str) -> bool:
+    """True iff `right` has at least one object change relative to `left`."""
+    cookie = await login_and_get_cookies(config.lakefs_url, config.lakefs_access_key, config.lakefs_secret_key)
+    async with aiohttp.ClientSession(cookies=cookie) as session:
+        url = (f'{config.lakefs_url}/api/v1/repositories/{urllib.parse.quote_plus(repo)}/refs/'
+               f'{urllib.parse.quote_plus(left)}/diff/{urllib.parse.quote_plus(right)}?amount=1')
+        response = await session.get(url)
+        if response.status != 200:
+            raise Exception(f"Failed to diff {repo} {left}..{right}: HTTP {response.status}")
+        data = await response.json()
+        return bool(data.get('results'))
+
+
+async def merge_branch(repo: str, source: str, destination: str, message: str = None) -> Optional[str]:
+    """Merge `source` into `destination`. Returns the merge commit id, or None
+    when there was nothing to merge. Any other failure raises."""
+    cookie = await login_and_get_cookies(config.lakefs_url, config.lakefs_access_key, config.lakefs_secret_key)
+    async with aiohttp.ClientSession(cookies=cookie) as session:
+        url = (f'{config.lakefs_url}/api/v1/repositories/{urllib.parse.quote_plus(repo)}/refs/'
+               f'{urllib.parse.quote_plus(source)}/merge/{urllib.parse.quote_plus(destination)}')
+        body = {"message": message or f"Merge '{source}' into '{destination}'"}
+        response = await session.post(url, json=body)
+        text = await response.text()
+        if response.status in (200, 201):
+            try:
+                return (json.loads(text) or {}).get('reference')
+            except ValueError:
+                return ''
+        # lakeFS answers a no-op merge with 400 "no changes"; that is success
+        # for our purposes (the branch is already in destination).
+        if response.status == 400 and 'no changes' in text.lower():
+            return None
+        raise Exception(f"Failed to merge {source} into {destination} on {repo}: HTTP {response.status} {text}")
+
+
+async def create_tag(repo: str, tag: str, ref: str) -> bool:
+    """Create `tag` at `ref`. Returns False if the tag already exists."""
+    cookie = await login_and_get_cookies(config.lakefs_url, config.lakefs_access_key, config.lakefs_secret_key)
+    async with aiohttp.ClientSession(cookies=cookie) as session:
+        url = f'{config.lakefs_url}/api/v1/repositories/{urllib.parse.quote_plus(repo)}/tags'
+        response = await session.post(url, json={"id": tag, "ref": ref})
+        if response.status in (200, 201):
+            return True
+        if response.status == 409:
+            return False
+        raise Exception(f"Failed to tag {repo}@{ref} as {tag}: HTTP {response.status} {await response.text()}")
+
+
+async def read_object_text(repo: str, ref: str, remote_file_path: str) -> Optional[str]:
+    """Fetch a small text object into memory. None when absent.
+
+    ponytail: no size guard -- the only caller reads void/void.nt (tens of KB).
+    Add one if this ever points at a graph file.
+    """
+    cookie = await login_and_get_cookies(config.lakefs_url, config.lakefs_access_key, config.lakefs_secret_key)
+    timeout = aiohttp.ClientTimeout(total=120, sock_connect=30)
+    async with aiohttp.ClientSession(cookies=cookie, timeout=timeout) as session:
+        url = (f'{config.lakefs_url}/api/v1/repositories/{urllib.parse.quote_plus(repo)}/refs/'
+               f'{urllib.parse.quote_plus(ref)}/objects?path={urllib.parse.quote_plus(remote_file_path)}')
+        response = await session.get(url)
+        if response.status == 404:
+            return None
+        if response.status != 200:
+            raise Exception(f"Failed to read {repo}@{ref}:{remote_file_path}: HTTP {response.status}")
+        return await response.text()

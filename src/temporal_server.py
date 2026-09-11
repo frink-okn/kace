@@ -141,7 +141,7 @@ async def convert_to_hdt(
     try:
         kg_config = (await KGConfig.from_git()).get_by_repo(repo_id=repo_id)
     except Exception as e:
-        slack_canary.send_slack_message(
+        slack_canary.send_message(
             f"⚠️ Failed to read registry config from {config.kg_config_url}, {str(e)}"
         )
         raise e
@@ -311,7 +311,7 @@ async def handle_tag_creation(
         kg_name = kg_config_obj.shortname
         kg_config_dict = kg_config_obj.dict()
     except Exception as e:
-        slack_canary.send_slack_message(
+        slack_canary.send_message(
             f"⚠️ Failed to read registry config from {config.kg_config_url}, {str(e)}"
         )
         raise e

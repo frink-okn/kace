@@ -588,7 +588,13 @@ PER_REPO_LAKEFS_OVERRIDES = {
 
 
 @activity.defn
-async def prepare_qlever_job_specs(kg_refs: dict, s2_tag: str, only_kg: list = None) -> dict:
+async def prepare_qlever_job_specs(
+    kg_refs: dict,
+    s2_tag: str,
+    only_kg: list = None,
+    state: dict = None,
+    s2_commit: str = None,
+) -> dict:
     """Build the qlever IndexBuilderMain command + download manifest.
 
     Refs and tags are resolved by the workflow (resolve_qlever_refs) and
@@ -602,6 +608,17 @@ async def prepare_qlever_job_specs(kg_refs: dict, s2_tag: str, only_kg: list = N
                  Required (s2 graphs always participate).
         only_kg: optional subset of kg shortnames to keep (already applied in
                  kg_refs; passed in only to filter the s2 block).
+        state:   qlever state dict (read_qlever_state) — used for per-repo
+                 change detection. A repo's file is left off the download
+                 manifest when its commit matches state["source_commits"] AND
+                 the local file from the last successful build is still on
+                 the shared PVC. Whole-build change detection (workflow phase
+                 2) only skips the ENTIRE build when nothing anywhere
+                 changed; most runs do have some KG change, so without this,
+                 every run re-pulled every repo's file regardless of whether
+                 that repo changed.
+        s2_commit: latest commit of the s2-builds repo at s2_tag, for the
+                 same per-repo skip on the s2 graph files.
 
     Returns:
       - downloads:     [{repo, remote_path, local_path, ref}]
@@ -628,24 +645,43 @@ async def prepare_qlever_job_specs(kg_refs: dict, s2_tag: str, only_kg: list = N
         "parser-integer-overflow-behavior": "overflowing-integers-become-doubles",
     })
 
+    source_commits = (state or {}).get("source_commits", {})
+
+    def _unchanged(repo: str, commit: str, local_path: str) -> bool:
+        # ponytail: commit match + file present/non-empty, no checksum. Good
+        # enough because state is only written after a build fully succeeds
+        # (qlever_index.py phase 7), so a commit match implies the file on
+        # the shared PVC is the one that commit produced. Upgrade to a
+        # checksum if the PVC ever gets manual/partial edits between runs.
+        return (
+            commit is not None
+            and source_commits.get(repo) == commit
+            and os.path.exists(local_path)
+            and os.path.getsize(local_path) > 0
+        )
+
     downloads = []
     for repo, meta in kg_refs.items():
-        downloads.append({
-            "repo":        repo,
-            "remote_path": meta["remote_path"],
-            "local_path":  f"{source_root}/{repo}/graph.nt.gz",
-            "ref":         meta["ref"],
-        })
+        local_path = f"{source_root}/{repo}/graph.nt.gz"
+        if not _unchanged(repo, meta["commit"], local_path):
+            downloads.append({
+                "repo":        repo,
+                "remote_path": meta["remote_path"],
+                "local_path":  local_path,
+                "ref":         meta["ref"],
+            })
 
     for fname, base_shortname, _iri in S2_GRAPHS:
         if only_kg and base_shortname not in only_kg:
             continue
-        downloads.append({
-            "repo":        S2_LAKEFS_REPO,
-            "remote_path": fname,
-            "local_path":  f"{s2_local_dir}/{fname}",
-            "ref":         s2_tag,
-        })
+        local_path = f"{s2_local_dir}/{fname}"
+        if not _unchanged(S2_LAKEFS_REPO, s2_commit, local_path):
+            downloads.append({
+                "repo":        S2_LAKEFS_REPO,
+                "remote_path": fname,
+                "local_path":  local_path,
+                "ref":         s2_tag,
+            })
 
     build_cmd_parts = [
         # Raise fd limit (-n) and process/thread limit (-u) before the build:

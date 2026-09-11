@@ -7,7 +7,9 @@ Phase 0b: sync okn-void (merge stable_v* -> main, wait for its conversion) so
 Phase 1: resolve refs+commits for every source repo (KGs + s2-builds).
 Phase 2: short-circuit if no source commit has changed since the serving build.
 Phase 3: allocate a new per-build RWO premium-ssd output PVC.
-Phase 4: download all source files to /shared/qlever-source (pinned to refs).
+Phase 4: download source files to /shared/qlever-source (pinned to refs),
+          skipping any repo whose commit hasn't changed since the last
+          successful build and whose file is still on the shared PVC.
 Phase 5: submit the IndexBuilderMain Job (writes to the new output PVC).
 Phase 6: watch the Job (heartbeated, multi-day safe).
 Phase 7: write new state (serving=new, previous=old_serving, previous_marked_at=now).
@@ -283,7 +285,7 @@ class QLeverIndexWorkflow:
         # ── Phase 4: downloads ────────────────────────────────────────────
         specs = await workflow.execute_activity(
             prepare_qlever_job_specs,
-            args=[refs["kg_refs"], refs["s2_tag"], only_kg],
+            args=[refs["kg_refs"], refs["s2_tag"], only_kg, state, refs["s2_commit"]],
             start_to_close_timeout=QUICK_TIMEOUT,
             retry_policy=NO_RETRY,
         )

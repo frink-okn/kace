@@ -10,12 +10,18 @@ aug triples to nt/graph.nt.gz. No step can remove or modify existing triples
 Steps are configured per-KG in the okn-registry kgs.yaml:
 
     frink-options:
-      lakefs-repo: scales
+      lakefs-repo: scales-kg
       augmentations:
         - name: map-predicate
           params:
-            from: https://scales.okn.us/property/hasName   # str or list
+            from:                                          # str or list
+              - http://release.niem.gov/niem/niem-core/5.0/#PersonFullName
+              - http://release.niem.gov/niem/niem-core/5.0/#OrganizationName
             to: http://www.w3.org/2000/01/rdf-schema#label
+
+`from` must name a predicate that actually occurs in the KG. A step matching
+nothing is not an error -- it writes an empty aug file and the merge skips --
+so check the count before adding one.
 
 To add a new augmentation type: write a builder(params, hdt_file, out_file)
 that raises ValueError on bad params and returns a bash command writing
@@ -54,18 +60,24 @@ def _build_map_predicate(params: dict, hdt_file: str, out_file: str) -> str:
     """For every triple (s, FROM, o) in the HDT, emit (s, TO, o).
 
     `? P ?` searches use the .hdt.index.v1-1 written by `hdtc create --index`.
-    The sed swap replaces the first occurrence of " <FROM> " per line: subjects
-    are single tokens, so the predicate is always the first possible match and
-    object literals are never touched. `&` is escaped because it is special in
-    a sed replacement.
+
+    `hdtc search` prints TAB-delimited N-Triples (`S\tP\tO\t.`), so the
+    predicate is field 2 and awk rewrites it positionally. Matching on the
+    predicate text instead would be a silent-failure trap: a pattern built for
+    the wrong delimiter matches nothing, awk/sed still exit 0, and the step
+    emits the ORIGINAL triples, which the merge folds back in as duplicates —
+    a no-op that looks exactly like success. Positional rewriting also leaves
+    object literals alone whatever they contain (a literal tab or newline is
+    escaped in N-Triples, so every triple stays one field-aligned line).
     """
     from_preds = _iri_list(params.get("from"), "map-predicate", "from")
-    to_pred = _iri(params.get("to"), "map-predicate", "to").replace("&", r"\&")
+    to_pred = _iri(params.get("to"), "map-predicate", "to")
     searches = "; ".join(
-        f"hdtc search {hdt_file} --query '? <{p}> ?' | sed 's| <{p}> | <{to_pred}> |'"
-        for p in from_preds
+        f"hdtc search {hdt_file} --query '? <{p}> ?'" for p in from_preds
     )
-    return f"set -euo pipefail; {{ {searches}; }} | gzip > {out_file}"
+    # NF >= 4 drops anything that is not a full S/P/O/. record.
+    swap = ("awk -F'\\t' 'BEGIN{OFS=\"\\t\"} NF>=4 {$2=\"<" + to_pred + ">\"; print}'")
+    return f"set -euo pipefail; {{ {searches}; }} | {swap} | gzip > {out_file}"
 
 
 AUGMENTATION_CATALOG = {

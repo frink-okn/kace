@@ -13,12 +13,28 @@ spec:
     - path:
         type: PathPrefix
         value: "/{{ kg_name }}"
+    # The backend is the KEDA interceptor, not this KG's Service: the KG sits at
+    # zero replicas until a request arrives, and the interceptor is what holds
+    # that request while the Deployment scales 0->1 and QLever loads its index.
+    #
+    # Cross-namespace, so the ReferenceGrant `frink-routes-to-interceptor` in the
+    # keda namespace must exist or the Gateway reports ResolvedRefs=False and this
+    # route serves 500s -- see keda-imp/glue.yaml.
     backendRefs:
-    - name: frink-{{ kg_name }}-qlever-server
-      port: 7001
+    - name: keda-add-ons-http-interceptor-proxy
+      namespace: keda
+      port: 8080
     filters:
     - type: URLRewrite
       urlRewrite:
+        # Every KG is a path prefix on one shared hostname, and the path is
+        # rewritten to "/" because QLever serves at root -- so by the time a
+        # request reaches a shared interceptor, all 41 KGs look identical. Moving
+        # the KG name into the Host header is what keeps them apart. This string
+        # is the key the HTTPScaledObject matches on and is never resolved by
+        # DNS; keep it in sync with httpscaledobject.j2 and with
+        # cost-dashboard/backfill_fleet.py's INTERNAL_HOST.
+        hostname: "{{ kg_name }}.qlever.frink.internal"
         path:
           type: ReplacePrefixMatch
           replacePrefixMatch: "/"

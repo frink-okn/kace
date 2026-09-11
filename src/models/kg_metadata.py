@@ -34,8 +34,14 @@ class AugmentationStep(BaseModel):
 # Define a model for the nested "frink-options"
 class FrinkOptions(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
-    documentation_path: Optional[str] = Field(alias="documentation-path")
-    lakefs_repo: Optional[str] = Field(alias="lakefs-repo")
+    # Both default to None on purpose. `Optional[str]` alone does NOT make a
+    # field optional in pydantic v2 -- without a default it stays REQUIRED, and
+    # a registry entry carrying only some other frink-options key (wikidata
+    # grew a `kgf:` block) then fails validation. KGConfig.from_git() is read
+    # by every webhook, so one such entry takes down conversion AND deployment
+    # for all 40+ KGs at once. Consumers already guard for a missing repo.
+    documentation_path: Optional[str] = Field(alias="documentation-path", default=None)
+    lakefs_repo: Optional[str] = Field(alias="lakefs-repo", default=None)
     neo4j_conversion_config_path: Optional[str] = Field(alias="neo4j-conversion-config-path", default="")
     augmentations: Optional[List[AugmentationStep]] = Field(default_factory=list)
 

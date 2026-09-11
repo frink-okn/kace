@@ -44,12 +44,54 @@ service:
   type: ClusterIP
   port: 80
 
+# Shared secret every webhook request must send as `X-KACE-Token`.
+# Kept out of app_config on purpose: app_config values are rendered as plaintext
+# env in the pod spec by the kace.env_variables helper. Create the Secret yourself:
+#   kubectl create secret generic kace-webhook-token --from-literal=token=$(openssl rand -hex 32)
+# The same value goes on the lakeFS server as LAKEFSACTIONS_KACE_TOKEN (lakeFS
+# blocks env vars not carrying that prefix) and is referenced from each action's
+# hook properties: headers: {X-KACE-Token: "{{ ENV.LAKEFSACTIONS_KACE_TOKEN }}"}
+webhookToken:
+  secretName: "kace-webhook-token"
+  secretKey: "token"
+
+# Credentials for the SERVING cluster (GKE), used when KACE runs its batch work
+# on one cluster and manages SPARQL endpoints on another. Leave secretName empty
+# for single-cluster mode -- every "remote" call then stays local and nothing in
+# the behavior changes. Create the Secret from a static kubeconfig (SA token +
+# CA + server URL, NOT a gcloud exec-plugin one); see deploy/gke-remote-rbac.yaml:
+#   kubectl create secret generic kace-remote-kubeconfig --from-file=config=./gke.kubeconfig
+# and set app_config.remote_kubeconfig to /etc/kace/remote/<key>.
+remoteCluster:
+  secretName: ""
+
+# Does THIS install create the SPARQL serving objects (HTTPRoute, GKE
+# HealthCheckPolicy/GCPBackendPolicy, KEDA HTTPScaledObject) in its own
+# namespace? True for a single-cluster install and for the serving cluster.
+# Set false on a batch-only cluster: those CRDs are not installed there, and
+# Kubernetes rejects a Role granting permissions the installer does not hold.
+rbac:
+  serving: true
+
+# HMAC credentials for qlever_index_bucket. Kept in a Secret rather than
+# app_config for the same reason as the webhook token: app_config renders as
+# plaintext env in the pod spec.
+#   kubectl create secret generic kace-index-bucket \
+#     --from-literal=access_key=... --from-literal=secret_key=...
+indexBucket:
+  secretName: ""
+  accessKeyKey: "access_key"
+  secretKeyKey: "secret_key"
+
 ingress:
   enabled: false
   className: ""
   annotations: {}
     # kubernetes.io/ingress.class: nginx
     # kubernetes.io/tls-acme: "true"
+    # Second layer in front of the shared-secret check: only lakeFS (and your
+    # operators) should be able to reach these endpoints at all.
+    # nginx.ingress.kubernetes.io/whitelist-source-range: "10.0.0.0/8,<lakefs egress CIDR>"
   hosts:
     - host: chart-example.local
       paths:
@@ -138,6 +180,22 @@ temporal_pg:
 command:
   entry: "server:app"
 app_config:
+  # Conversion memory derivation, when an action states only `memory`:
+  #   hdtc   --memory-limit  = memory * hdtc_memory_fraction  (floor 2GiB)
+  #   qlever --stxxl-memory  = memory * stxxl_memory_fraction
+  # Both flags are SOFT budgets for internal buffers, not caps on RSS, so
+  # neither can sit at parity with the pod: hdtc at 93% of its pod was
+  # OOMKilled. QLever's real need is numBlocks * numColumns * 500kB -- a
+  # property of the data, not the pod -- so its fraction is only a proxy; raise
+  # it when a build reports "Insufficient memory for merging N blocks".
+  hdtc_memory_fraction: "0.75"
+  stxxl_memory_fraction: "0.5"
+
+  # Serve every endpoint under this path prefix (e.g. "/kace" -> POST
+  # /kace/convert_to_hdt). The app mounts itself there, so an ingress can route
+  # by plain path with no rewrite annotations. Empty = served at the root.
+  webhook_path_prefix: ""
+
   lakefs_url: "http://lakefs"
   lakefs_access_key: ""
   lakefs_secret_key: ""
@@ -168,12 +226,45 @@ app_config:
   ldf_sync_image: ""
   ldf_host_name: "frink.apps.renci.org"
   # QLever federated index build (QLeverIndexWorkflow)
+  # Indexer image -- the build that WRITES index files, and the one the
+  # federated server runs (so it can read what that build produced).
+  #
+  # Pinned to a pre-3159 build on purpose. QLever PR 3159 (merged 2026-09-01)
+  # changed the on-disk index format: a post-3159 server cannot read an index
+  # written before it, and that is what broke the per-KG servers when :latest
+  # moved. Every existing index was written by commit-99b6db5.
+  #
+  # Migrating means moving qlever_image and qlever_server_image TOGETHER, and
+  # either rebuilding each index or running `qlever-upgrade-index` (upstream
+  # reports ~10x faster than a rebuild, keeping the old index alongside).
+  # Bumping qlever_image alone also re-triggers the federated build: change
+  # detection compares the configured image against the one in state.
   qlever_image: "adfreiburg/qlever:commit-99b6db5"
+  # Per-KG QLever server image. Pinned, not :latest -- a server can only read an
+  # index whose format its build understands, so an unpinned tag turns any
+  # upstream push into an unannounced fleet-wide format change.
+  qlever_server_image: "adfreiburg/qlever:commit-70c9f855d0"
   qlever_indexer_cpu: "8"
-  qlever_indexer_memory: "100Gi"
-  qlever_indexer_stxxl_memory: "40G"
+  qlever_indexer_memory: "64Gi"
+  qlever_indexer_stxxl_memory: "10G"
   qlever_index_pvc_size: "3Ti"
+  # Storage class for the PVC the indexer WRITES (build cluster).
   qlever_index_pvc_storage_class: "premium-rwo"
+  # Storage class for the PVC the federation server MOUNTS (serving cluster).
+  # Same value in single-cluster mode; they diverge once the two are split.
+  qlever_index_serving_storage_class: "premium-rwo"
+  # Size of the serving PVC. Empty = same as qlever_index_pvc_size. Worth
+  # setting: the build volume needs room for intermediates, the serving volume
+  # only holds the finished index, and premium SSD is billed on the provisioned
+  # size rather than what is used.
+  qlever_index_serving_pvc_size: ""
+  # Bucket used to move a finished index from the build cluster to the serving
+  # cluster (an RWO PVC cannot span clusters). Empty = single-cluster mode: the
+  # build PVC is the serving PVC and no transfer happens. GCS works via its
+  # S3-compatible endpoint with HMAC keys; set a lifecycle rule on the bucket so
+  # old builds expire instead of accumulating terabytes.
+  qlever_index_bucket: ""
+  qlever_index_bucket_endpoint: "https://storage.googleapis.com"
   qlever_source_path: "/shared/qlever-source"
   qlever_state_configmap: "kace-qlever-state"
   qlever_index_pvc_prefix: "kace-qlever-index-"
@@ -183,13 +274,18 @@ app_config:
   qlever_num_triples_per_batch: "5000000"
   # QLever federation server (/federation)
   qlever_federation_cpu: "8"
-  qlever_federation_memory: "84Gi"
+  qlever_federation_memory: "50Gi"
   qlever_federation_cache_pct: "0.30"
   qlever_federation_index_basename: "frink"
   qlever_federation_prefix: "federation"
   qlever_federation_extra_args: ""
   # Weekly QLever index build schedule (Temporal Schedule, upserted on worker boot).
   # Default fires Friday 18:00 UTC; ~1d17h build finishes before Sunday night.
+  # A finished index build normally kicks the federation server rollover. Set
+  # false where the index is built but served elsewhere and the transfer/remote
+  # credentials are not wired up yet -- otherwise the rollover tries to create
+  # serving objects on the build cluster.
+  qlever_federation_rollover_enabled: "true"
   qlever_index_schedule_enabled: "true"
   qlever_index_schedule_id: "qlever-index-weekly"
   qlever_index_schedule_cron: "0 18 * * 5"

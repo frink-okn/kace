@@ -314,7 +314,12 @@ async def deploy_qlever(kg_config: dict, lakefs_action: dict, cpu: str = "1", me
         total_mib = _memory_str_to_mib(memory)
         cache_mib = int(total_mib * 0.70)
         entry_mib = cache_mib // 4
-        qlever_args = ["-j", "8", "-m", f"{cache_mib}M", "-c", f"{cache_mib}M", "-e", f"{entry_mib}M"]
+        # -s: qlever's own default-query-timeout is 30s, short enough to cut off
+        #     legitimate joins. 300s is the ceiling the KEDA interceptor allows
+        #     anyway (KEDA_HTTP_RESPONSE_HEADER_TIMEOUT, 300s since http-add-on
+        #     0.14 and 500ms before it) -- raising past this needs that raised too.
+        qlever_args = ["-j", "8", "-m", f"{cache_mib}M", "-c", f"{cache_mib}M", "-e", f"{entry_mib}M",
+                       "-s", "300s"]
 
     parameters = {
         "kg_name": kg_name,
@@ -1259,7 +1264,10 @@ async def deploy_qlever_federation(build_id: str, pvc_name: str, image: str) -> 
     total_mib = _memory_str_to_mib(memory)
     cache_mib = int(total_mib * app_config.qlever_federation_cache_pct)
     entry_mib = max(cache_mib // 4, 1)
-    qlever_args = ["-m", f"{cache_mib}M", "-c", f"{cache_mib}M", "-e", f"{entry_mib}M"]
+    # -s: see deploy_qlever. Federation is not behind the KEDA interceptor, so
+    #     only the GCPBackendPolicy 3600s sits above it. Do not also put -s in
+    #     qlever_federation_extra_args -- boost rejects a repeated option.
+    qlever_args = ["-m", f"{cache_mib}M", "-c", f"{cache_mib}M", "-e", f"{entry_mib}M", "-s", "300s"]
     if app_config.qlever_federation_extra_args:
         qlever_args.extend(app_config.qlever_federation_extra_args)
 

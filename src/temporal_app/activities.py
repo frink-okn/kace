@@ -1264,10 +1264,15 @@ async def deploy_qlever_federation(build_id: str, pvc_name: str, image: str) -> 
     total_mib = _memory_str_to_mib(memory)
     cache_mib = int(total_mib * app_config.qlever_federation_cache_pct)
     entry_mib = max(cache_mib // 4, 1)
+    # -m is the query-processing budget, not the cache: it was previously tied to
+    # cache_pct, which sized the federated server's working memory off a number
+    # meant for the result cache. Clamped to the pod limit so a smaller
+    # qlever_federation_memory cannot promise qlever more than the cgroup allows.
+    mem_max_mib = min(_memory_str_to_mib(app_config.qlever_federation_mem_max), total_mib)
     # -s: see deploy_qlever. Federation is not behind the KEDA interceptor, so
-    #     only the GCPBackendPolicy 3600s sits above it. Do not also put -s in
-    #     qlever_federation_extra_args -- boost rejects a repeated option.
-    qlever_args = ["-m", f"{cache_mib}M", "-c", f"{cache_mib}M", "-e", f"{entry_mib}M", "-s", "300s"]
+    #     only the GCPBackendPolicy 3600s sits above it. Do not also put -s or -m
+    #     in qlever_federation_extra_args -- boost rejects a repeated option.
+    qlever_args = ["-m", f"{mem_max_mib}M", "-c", f"{cache_mib}M", "-e", f"{entry_mib}M", "-s", "300s"]
     if app_config.qlever_federation_extra_args:
         qlever_args.extend(app_config.qlever_federation_extra_args)
 

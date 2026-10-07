@@ -68,6 +68,11 @@ class Config(BaseModel):
     qlever_federation_cpu: str
     qlever_federation_memory: str
     qlever_federation_cache_pct: float
+    # qlever's -m (total memory for query processing), separate from -c (the
+    # result cache, sized by cache_pct). Clamped to the pod's memory limit at
+    # use, so lowering qlever_federation_memory cannot hand qlever a budget
+    # bigger than the cgroup and turn a slow query into an OOMKill.
+    qlever_federation_mem_max: str
     qlever_federation_index_basename: str
     qlever_federation_prefix: str
     qlever_federation_extra_args: list[str]
@@ -164,6 +169,7 @@ config = Config(
     qlever_federation_cpu=os.environ.get('QLEVER_FEDERATION_CPU', '8'),
     qlever_federation_memory=os.environ.get('QLEVER_FEDERATION_MEMORY', '200Gi'),
     qlever_federation_cache_pct=float(os.environ.get('QLEVER_FEDERATION_CACHE_PCT', '0.70')),
+    qlever_federation_mem_max=os.environ.get('QLEVER_FEDERATION_MEM_MAX', '30720M'),
     qlever_federation_index_basename=os.environ.get('QLEVER_FEDERATION_INDEX_BASENAME', 'frink'),
     qlever_federation_prefix=os.environ.get('QLEVER_FEDERATION_PREFIX', 'federation'),
     qlever_federation_extra_args=[a.strip() for a in os.environ.get('QLEVER_FEDERATION_EXTRA_ARGS', '').split(',') if a.strip()],

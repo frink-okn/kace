@@ -276,6 +276,8 @@ app_config:
   qlever_federation_cpu: "8"
   qlever_federation_memory: "50Gi"
   qlever_federation_cache_pct: "0.30"
+  # qlever -m (query-processing memory), clamped to qlever_federation_memory.
+  qlever_federation_mem_max: "30720M"
   qlever_federation_index_basename: "frink"
   qlever_federation_prefix: "federation"
   qlever_federation_extra_args: ""

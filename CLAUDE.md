@@ -129,6 +129,17 @@ deploy source is `serving` — GCing after a rollback would delete the PVC just 
 Unsupported after a split: the Fuseki path (`download_hdt_files_activity` stages a PVC from
 inside the worker) and `_ldf_sync_image` pod introspection (set `ldf_sync_image`).
 
+## Throttle proxy (optional, gateway mode)
+
+`throttle_enabled` (env `THROTTLE_ENABLED`, default false) points the per-KG and
+federation HTTPRoutes at the `frink-throttle` nginx Service instead of the KEDA
+interceptor / federation Service, and drops their URLRewrite (nginx does the path
+rewrite and sets the per-KG `Host`). The proxy is **not rendered by KACE**: it is the
+`frink-throttle` chart in the sibling `helm-charts` repo (per-client request/bandwidth/
+connection limits, gzip clients ×10, plus the Cloud Armor attachment). Deploy it
+before flipping the flag; `scripts/repoint_routes_to_throttle.py` patches live routes
+(`--revert` undoes). Keep `qlever/httproute.j2` and the chart's nginx rewrite in sync.
+
 ## Webhook auth
 
 All endpoints sit behind `require_token` (`temporal_server.py`), an app-wide FastAPI

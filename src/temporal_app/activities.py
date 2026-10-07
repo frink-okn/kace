@@ -314,7 +314,12 @@ async def deploy_qlever(kg_config: dict, lakefs_action: dict, cpu: str = "1", me
         total_mib = _memory_str_to_mib(memory)
         cache_mib = int(total_mib * 0.70)
         entry_mib = cache_mib // 4
-        qlever_args = ["-j", "8", "-m", f"{cache_mib}M", "-c", f"{cache_mib}M", "-e", f"{entry_mib}M"]
+        # -s: qlever's own default-query-timeout is 30s, short enough to cut off
+        #     legitimate joins. 300s is the ceiling the KEDA interceptor allows
+        #     anyway (KEDA_HTTP_RESPONSE_HEADER_TIMEOUT, 300s since http-add-on
+        #     0.14 and 500ms before it) -- raising past this needs that raised too.
+        qlever_args = ["-j", "8", "-m", f"{cache_mib}M", "-c", f"{cache_mib}M", "-e", f"{entry_mib}M",
+                       "-s", "300s"]
 
     parameters = {
         "kg_name": kg_name,
@@ -326,6 +331,9 @@ async def deploy_qlever(kg_config: dict, lakefs_action: dict, cpu: str = "1", me
         "repository_id": lakefs_action_obj.repository_id,
         "branch_id": lakefs_action_obj.tag_id if lakefs_action_obj.tag_id else lakefs_action_obj.commit_id,
         "host_name": config.frink_address,
+        "throttle_enabled": config.throttle_enabled,
+        "throttle_service": config.throttle_service,
+        "throttle_port": config.throttle_port,
         "pvc_storage_size": pvc_storage_size,
         "qlever_storage_class": config.qlever_storage_class,
         "qlever_image": config.qlever_server_image,
@@ -1259,7 +1267,15 @@ async def deploy_qlever_federation(build_id: str, pvc_name: str, image: str) -> 
     total_mib = _memory_str_to_mib(memory)
     cache_mib = int(total_mib * app_config.qlever_federation_cache_pct)
     entry_mib = max(cache_mib // 4, 1)
-    qlever_args = ["-m", f"{cache_mib}M", "-c", f"{cache_mib}M", "-e", f"{entry_mib}M"]
+    # -m is the query-processing budget, not the cache: it was previously tied to
+    # cache_pct, which sized the federated server's working memory off a number
+    # meant for the result cache. Clamped to the pod limit so a smaller
+    # qlever_federation_memory cannot promise qlever more than the cgroup allows.
+    mem_max_mib = min(_memory_str_to_mib(app_config.qlever_federation_mem_max), total_mib)
+    # -s: see deploy_qlever. Federation is not behind the KEDA interceptor, so
+    #     only the GCPBackendPolicy 3600s sits above it. Do not also put -s or -m
+    #     in qlever_federation_extra_args -- boost rejects a repeated option.
+    qlever_args = ["-m", f"{mem_max_mib}M", "-c", f"{cache_mib}M", "-e", f"{entry_mib}M", "-s", "300s"]
     if app_config.qlever_federation_extra_args:
         qlever_args.extend(app_config.qlever_federation_extra_args)
 
@@ -1270,6 +1286,9 @@ async def deploy_qlever_federation(build_id: str, pvc_name: str, image: str) -> 
         "index_basename":     app_config.qlever_federation_index_basename,
         "federation_prefix":  app_config.qlever_federation_prefix,
         "host_name":          app_config.frink_address.replace("https://", "").replace("http://", "").rstrip("/"),
+        "throttle_enabled":   app_config.throttle_enabled,
+        "throttle_service":   app_config.throttle_service,
+        "throttle_port":      app_config.throttle_port,
         "cpu":                cpu,
         "memory":             memory,
         "qlever_args":        qlever_args,

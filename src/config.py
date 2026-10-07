@@ -36,6 +36,10 @@ class Config(BaseModel):
     temporal_host: str
     temporal_namespace: str
     networking_mode: str
+    # Route SPARQL traffic through the frink-throttle nginx proxy (helm-charts repo).
+    throttle_enabled: bool
+    throttle_service: str
+    throttle_port: int
     void_repo: str
     qlever_storage_class: str
     qlever_use_private_pvc: bool
@@ -68,6 +72,11 @@ class Config(BaseModel):
     qlever_federation_cpu: str
     qlever_federation_memory: str
     qlever_federation_cache_pct: float
+    # qlever's -m (total memory for query processing), separate from -c (the
+    # result cache, sized by cache_pct). Clamped to the pod's memory limit at
+    # use, so lowering qlever_federation_memory cannot hand qlever a budget
+    # bigger than the cgroup and turn a slow query into an OOMKill.
+    qlever_federation_mem_max: str
     qlever_federation_index_basename: str
     qlever_federation_prefix: str
     qlever_federation_extra_args: list[str]
@@ -136,6 +145,9 @@ config = Config(
     temporal_host=os.environ.get('TEMPORAL_HOST', 'localhost:7233'),
     temporal_namespace=os.environ.get('TEMPORAL_NAMESPACE', 'default'),
     networking_mode=os.environ.get('NETWORKING_MODE', 'ingress'),
+    throttle_enabled=os.environ.get('THROTTLE_ENABLED', 'false').lower() == 'true',
+    throttle_service=os.environ.get('THROTTLE_SERVICE', 'frink-throttle'),
+    throttle_port=int(os.environ.get('THROTTLE_PORT', '8080')),
     void_repo=os.environ.get('VOID_REPO', 'okn-void:develop'),
     qlever_storage_class=os.environ.get('QLEVER_STORAGE_CLASS', ''),
     qlever_use_private_pvc=os.environ.get('QLEVER_USE_PRIVATE_PVC', 'true').lower() == 'true',
@@ -164,6 +176,7 @@ config = Config(
     qlever_federation_cpu=os.environ.get('QLEVER_FEDERATION_CPU', '8'),
     qlever_federation_memory=os.environ.get('QLEVER_FEDERATION_MEMORY', '200Gi'),
     qlever_federation_cache_pct=float(os.environ.get('QLEVER_FEDERATION_CACHE_PCT', '0.70')),
+    qlever_federation_mem_max=os.environ.get('QLEVER_FEDERATION_MEM_MAX', '30720M'),
     qlever_federation_index_basename=os.environ.get('QLEVER_FEDERATION_INDEX_BASENAME', 'frink'),
     qlever_federation_prefix=os.environ.get('QLEVER_FEDERATION_PREFIX', 'federation'),
     qlever_federation_extra_args=[a.strip() for a in os.environ.get('QLEVER_FEDERATION_EXTRA_ARGS', '').split(',') if a.strip()],

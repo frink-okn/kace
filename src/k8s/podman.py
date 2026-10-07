@@ -8,6 +8,7 @@ import os
 from typing import Dict, List
 from log_util import LoggingUtil
 from config import config as app_conf
+from k8s import clients
 logger = LoggingUtil.init_logging(__name__)
 
 mapping = {
@@ -19,100 +20,65 @@ mapping = {
     "qlever-index-job": os.path.dirname(os.path.realpath(__file__)) + os.path.join(os.path.sep + "templates", "qlever-index-job.yaml"),
     "void-job": os.path.dirname(os.path.realpath(__file__)) + os.path.join(os.path.sep + "templates", "void-description-job.yaml"),
     "hdtc-job": os.path.dirname(os.path.realpath(__file__)) + os.path.join(os.path.sep + "templates", "hdtc-conversion.yaml"),
+    "qlever-fetch-job": os.path.dirname(os.path.realpath(__file__)) + os.path.join(os.path.sep + "templates", "qlever-fetch-index-job.yaml"),
     "okn-tools-job": os.path.dirname(os.path.realpath(__file__)) + os.path.join(os.path.sep + "templates", "okn-tools-job.yaml"),
     ## add other pods here
 }
 
-config.load_incluster_config()
-# config.load_kube_config('/mnt/c/Users/kebedey/kubeconfig/kubeconfig-sterling-kebedey-kebedey')
+def attach_extra_pvcs(pod_template, extra_pvcs, volume_mounts):
+    """Add the extra PVCs to a pod spec, one volume per CLAIM.
 
+    A pod that names the same claim through two volumes wedges kubelet on some
+    CSI drivers: the sandbox never completes, the pod sits in ContainerCreating
+    indefinitely, and no event says why. KACE hits this whenever
+    local_pvc_name == shared_pvc_name (a single-volume install), because the
+    default /mnt/repo mount and an extra_pvc then name the same PVC.
 
-_TOKEN_FILE = "/var/run/secrets/kubernetes.io/serviceaccount/token"
-
-
-def _log_token_diag():
-    """One-line diagnostic for the SA token file. Helps distinguish
-    'no token' vs 'malformed token' vs 'rotated token' when k8s answers
-    `system:anonymous` to an API call."""
-    try:
-        st = os.stat(_TOKEN_FILE)
-        with open(_TOKEN_FILE) as fh:
-            tok = fh.read().strip()
-        looks_jwt = tok.count(".") == 2 and len(tok) > 50
-        logger.info(
-            f"SA token diag: size={st.st_size}B mtime={st.st_mtime} "
-            f"jwt_shape={looks_jwt} head={tok[:20]!r}"
-        )
-    except Exception as e:
-        logger.error(f"SA token diag failed: {e}")
-
-
-def _fresh_api_client():
-    """Build a brand-new ApiClient with a Configuration loaded from disk.
-
-    Two things we need to handle:
-
-    1. GKE / k8s >= 1.24 rotate the projected SA token ~hourly. Older code
-       called `load_incluster_config()` once at module import, so the cached
-       token went stale and the client started hitting `system:anonymous`.
-       Fix: build a fresh Configuration per call.
-
-    2. Empirically, some versions of the kubernetes Python client (we pin
-       nothing in requirements.txt) fail to attach the Bearer header from
-       `Configuration.api_key` even though `load_incluster_config()` wrote
-       the right value. Observable symptom: a curl with the same token
-       authenticates correctly, but `client.CoreV1Api()` calls return
-       `system:anonymous`. Fix: after the loader runs, ALSO read the token
-       file ourselves and overwrite both `api_key` and the per-host default
-       headers with an explicit `Authorization: bearer ...`. This bypasses
-       any internal refresh-hook bookkeeping the client may have gotten
-       wrong.
+    One volume can back many mounts, so an already-mounted claim is reused.
     """
-    cfg = client.Configuration()
-    try:
-        config.load_incluster_config(client_configuration=cfg)
-    except Exception as e:
-        logger.error(f"load_incluster_config failed: {e}")
-        _log_token_diag()
-        raise
-
-    # Manual bearer-header override — see (2) above.
-    try:
-        with open(_TOKEN_FILE) as fh:
-            token = fh.read().strip()
-        if token:
-            cfg.api_key = {"authorization": f"bearer {token}"}
-            cfg.api_key_prefix = {}
-            api_client = client.ApiClient(configuration=cfg)
-            api_client.set_default_header("Authorization", f"Bearer {token}")
-            return api_client
-        else:
-            logger.warning("SA token file is empty; falling back to client default auth.")
-    except Exception as e:
-        logger.warning(f"Manual token attach failed, falling back to client default: {e}")
-
-    return client.ApiClient(configuration=cfg)
-
-
-def _core_v1():
-    return client.CoreV1Api(api_client=_fresh_api_client())
-
-
-def _batch_v1():
-    return client.BatchV1Api(api_client=_fresh_api_client())
-
-
-# Kept for source-compat with prior fix; now a no-op since callers use
-# the _core_v1 / _batch_v1 helpers above.
-def _reload_k8s_auth():
-    pass
-
+    existing_volumes = {vol.name for vol in pod_template.volumes or []}
+    claim_to_volume = {
+        vol.persistent_volume_claim.claim_name: vol.name
+        for vol in (pod_template.volumes or [])
+        if vol.persistent_volume_claim
+    }
+    for spec in extra_pvcs:
+        vol_name   = spec["name"]
+        claim_name = spec["claim"]
+        if claim_name in claim_to_volume:
+            existing = claim_to_volume[claim_name]
+            if existing != vol_name:
+                logger.info(
+                    f"claim {claim_name} is already mounted as volume '{existing}'; "
+                    f"reusing it for {spec['mount_path']} rather than declaring a "
+                    f"second volume for the same claim"
+                )
+            vol_name = existing
+        elif vol_name not in existing_volumes:
+            pod_template.volumes = (pod_template.volumes or []) + [
+                client.V1Volume(
+                    name=vol_name,
+                    persistent_volume_claim=client.V1PersistentVolumeClaimVolumeSource(
+                        claim_name=claim_name
+                    ),
+                )
+            ]
+            existing_volumes.add(vol_name)
+            claim_to_volume[claim_name] = vol_name
+        volume_mounts.append(client.V1VolumeMount(
+            name=vol_name,
+            mount_path=spec["mount_path"],
+            read_only=bool(spec.get("read_only", False)),
+        ))
+    return pod_template, volume_mounts
 
 class JobMan:
-    def __init__(self):
+    def __init__(self, cluster: str = clients.LOCAL):
         self.job_configs = {}
-        # @TODO make this a config
-        self.namespace = app_conf.k8s_namespace
+        # Which cluster this manager submits to. Resolved through clients.effective()
+        # so that "remote" silently means "local" until a remote kubeconfig exists.
+        self.cluster = clients.effective(cluster)
+        self.namespace = clients.namespace(self.cluster)
         for job_type, pod_dir in mapping.items():
             with open(pod_dir) as stream:
                 self.job_configs[job_type] = yaml.safe_load(stream)
@@ -126,8 +92,7 @@ class JobMan:
         return job_objects
 
     def ensure_configmap(self, name, data: Dict[str, str]):
-        _reload_k8s_auth()
-        core_v1 = _core_v1()
+        core_v1 = clients.core_v1(self.cluster)
         configmap_name = f"{name}-config"
         metadata = client.V1ObjectMeta(
             name=configmap_name,
@@ -238,7 +203,6 @@ class JobMan:
                 config-driven file contents without baking them into the
                 static template.
         """
-        _reload_k8s_auth()
         if env_vars is None:
             env_vars = dict()
         job: kubernetes.client.V1Job = self.job_objects[job_type]
@@ -269,14 +233,23 @@ class JobMan:
         if image:
             pod_template.containers[0].image = image
         # @TODO not all job containers need this but ok ...
-        volume_mounts = [
-            client.V1VolumeMount(
-                name="data",
-                mount_path="/mnt/repo",
-                read_only=read_only_default_mount,
-                # sub_path=f"{repo}/{branch}"
+        # The default `data` volume is local_pvc_name -- the working PVC this
+        # process shares with its job pods. It exists only on the local cluster,
+        # so a remote job must not reference it at all (the pod would sit
+        # Pending on a claim that isn't there). Remote jobs get what they need
+        # from extra_pvcs and object storage.
+        volume_mounts = []
+        if self.cluster == clients.LOCAL:
+            volume_mounts.append(
+                client.V1VolumeMount(
+                    name="data",
+                    mount_path="/mnt/repo",
+                    read_only=read_only_default_mount,
+                    # sub_path=f"{repo}/{branch}"
+                )
             )
-        ]
+        else:
+            pod_template.volumes = [v for v in (pod_template.volumes or []) if v.name != "data"]
         
         # Check for configmap in job config and ensure it exists
         job_config = self.job_configs.get(job_type)
@@ -303,27 +276,7 @@ class JobMan:
                 ))
 
         if extra_pvcs:
-            existing_volumes = {vol.name for vol in pod_template.volumes or []}
-            for spec in extra_pvcs:
-                vol_name   = spec["name"]
-                claim_name = spec["claim"]
-                mount_path = spec["mount_path"]
-                read_only  = bool(spec.get("read_only", False))
-                if vol_name not in existing_volumes:
-                    pod_template.volumes = (pod_template.volumes or []) + [
-                        client.V1Volume(
-                            name=vol_name,
-                            persistent_volume_claim=client.V1PersistentVolumeClaimVolumeSource(
-                                claim_name=claim_name
-                            ),
-                        )
-                    ]
-                    existing_volumes.add(vol_name)
-                volume_mounts.append(client.V1VolumeMount(
-                    name=vol_name,
-                    mount_path=mount_path,
-                    read_only=read_only,
-                ))
+            attach_extra_pvcs(pod_template, extra_pvcs, volume_mounts)
 
         # De-duplicate mounts by mount_path just in case
         unique_mounts = {vm.mount_path: vm for vm in volume_mounts}
@@ -332,7 +285,7 @@ class JobMan:
         if pod_security_context:
             pod_template.security_context = client.V1PodSecurityContext(**pod_security_context)
 
-        api = _batch_v1()
+        api = clients.batch_v1(self.cluster)
         logger.info(f"removing previous jobs {job_name} ")
         self.remove_job(job_name)
         return api.create_namespaced_job(namespace=self.namespace, body=job)
@@ -342,8 +295,7 @@ class JobMan:
 
         Returns a formatted string with pod status, exit codes, and tail logs.
         """
-        _reload_k8s_auth()
-        core_v1 = _core_v1()
+        core_v1 = clients.core_v1(self.cluster)
         output_parts = []
         try:
             pods = core_v1.list_namespaced_pod(
@@ -401,8 +353,7 @@ class JobMan:
             Exception: If the Job fails. Includes pod logs and exit codes.
         """
         while True:
-            _reload_k8s_auth()
-            batch_v1 = _batch_v1()
+            batch_v1 = clients.batch_v1(self.cluster)
             try:
                 job = batch_v1.read_namespaced_job(name=job_name, namespace=self.namespace)
             except client.exceptions.ApiException as e:
@@ -442,8 +393,7 @@ class JobMan:
             Exception: If the Job fails. Includes pod logs and exit codes.
         """
         while True:
-            _reload_k8s_auth()
-            batch_v1 = _batch_v1()
+            batch_v1 = clients.batch_v1(self.cluster)
             try:
                 job = batch_v1.read_namespaced_job(name=job_name, namespace=self.namespace)
             except client.exceptions.ApiException as e:
@@ -474,8 +424,7 @@ class JobMan:
         exists = True
         while exists:
             try:
-                _reload_k8s_auth()
-                api = _batch_v1()
+                api = clients.batch_v1(self.cluster)
                 logger.info("looking up job {0}".format(name))
                 job = api.read_namespaced_job(namespace=self.namespace, name=name)
                 logger.info(f"job found... checking if being deleted")
@@ -503,8 +452,7 @@ class JobMan:
         exists = True
         while exists:
             try:
-                _reload_k8s_auth()
-                v1 = _core_v1()
+                v1 = clients.core_v1(self.cluster)
 
                 pod = v1.read_namespaced_pod(name=pod_name, namespace=self.namespace)
                 # Check if deletionTimestamp is set
@@ -525,8 +473,7 @@ class JobMan:
                     print(f"An error occurred: {e}")
 
     def remove_pods(self, job_name):
-        _reload_k8s_auth()
-        result = _core_v1().list_namespaced_pod(namespace=self.namespace,
+        result = clients.core_v1(self.cluster).list_namespaced_pod(namespace=self.namespace,
                                                         label_selector=f"job-name={job_name}")
 
         for pod in result.items:

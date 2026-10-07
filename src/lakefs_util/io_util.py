@@ -180,6 +180,11 @@ QLEVER_SOCK_READ_SECS = int(os.environ.get("LAKEFS_QLEVER_SOCK_READ", "120"))
 # silently no-ops outside a temporal activity context.
 _HEARTBEAT_INTERVAL_SECS = 30
 
+# Upload tuning. lakeFS is across a WAN from the build cluster, so the transfer
+# is long and the connection is not always stable.
+UPLOAD_SOCK_READ_SECS = int(os.environ.get("LAKEFS_UPLOAD_SOCK_READ_SECS", "600"))
+UPLOAD_MAX_ATTEMPTS = int(os.environ.get("LAKEFS_UPLOAD_ATTEMPTS", "3"))
+
 
 def _activity_heartbeat(detail: dict) -> None:
     try:
@@ -239,7 +244,17 @@ async def download_file(file_name, repo, branch, download_path,
         os.ftruncate(fd, size)
         part_size = (size + parts - 1) // parts
 
-        max_attempts = 5
+        # Budget retries by LACK OF PROGRESS, not by attempt count. Every retry
+        # resumes from the byte offset already written, so a long transfer over
+        # a WAN -- where the peer truncates the response every couple of GB --
+        # makes progress on each attempt and would otherwise exhaust a fixed
+        # budget purely for being large. A 34GB part cut every ~1.8GB needs ~19
+        # attempts and is perfectly healthy; a stream that delivers zero bytes
+        # `max_stalls` times in a row is genuinely stuck.
+        max_stalls  = int(os.environ.get("LAKEFS_DOWNLOAD_STALLS", "5"))
+        # Backstop so a pathological peer (progress of a few bytes per attempt)
+        # cannot loop forever.
+        hard_cap    = int(os.environ.get("LAKEFS_DOWNLOAD_MAX_ATTEMPTS", "200"))
         base_delay   = 2
         loop = asyncio.get_event_loop()
 
@@ -250,9 +265,11 @@ async def download_file(file_name, repo, branch, download_path,
                 return
             offset = start  # advances across retries — never re-download bytes already pwritten
             last_hb = loop.time()
-            for attempt in range(1, max_attempts + 1):
+            stalls = 0      # consecutive attempts that transferred nothing
+            for attempt in range(1, hard_cap + 1):
                 if offset > end:
                     return
+                attempt_start_offset = offset
                 headers = {'Accept-Encoding': 'identity', 'Range': f'bytes={offset}-{end}'}
                 try:
                     async with session.get(file_url, headers=headers) as resp:
@@ -276,12 +293,20 @@ async def download_file(file_name, repo, branch, download_path,
                                 last_hb = now
                     return
                 except (asyncio.TimeoutError, aiohttp.ClientError, OSError) as e:
-                    if attempt >= max_attempts:
-                        logger.error(f"part {i} {file_name}: giving up after {attempt} attempts at offset {offset}: {e}")
+                    stalls = 0 if offset > attempt_start_offset else stalls + 1
+                    if stalls >= max_stalls:
+                        logger.error(
+                            f"part {i} {file_name}: giving up after {stalls} attempts with no progress "
+                            f"at offset {offset}: {e}"
+                        )
                         raise
-                    delay = base_delay * (2 ** (attempt - 1))
+                    if attempt >= hard_cap:
+                        logger.error(f"part {i} {file_name}: hit hard cap of {hard_cap} attempts at offset {offset}: {e}")
+                        raise
+                    delay = base_delay * (2 ** min(stalls, 5))
                     logger.warning(
                         f"part {i} {file_name}: attempt {attempt} failed ({type(e).__name__}: {e}), "
+                        f"progressed {offset - attempt_start_offset} bytes, stalls={stalls}, "
                         f"retry in {delay}s (resuming from offset {offset})"
                     )
                     _activity_heartbeat({
@@ -517,31 +542,64 @@ async def upload_files(repo: str, root_branch: str = "main", local_files: list[t
     # push local files.
     login_cookie = await login_and_get_cookies(config.lakefs_url, config.lakefs_access_key, config.lakefs_secret_key)
 
+    # No total timeout: a multi-GB object over a WAN cannot fit in aiohttp's
+    # 5-minute default, which is what killed the babel upload. Bound the
+    # *inactivity* instead, so a genuinely dead socket still fails fast.
+    timeout = aiohttp.ClientTimeout(total=None, sock_connect=60, sock_read=UPLOAD_SOCK_READ_SECS)
+
     for file, remote_path in local_files:
-        async with aiohttp.ClientSession(cookies=login_cookie) as session:
-            stream = await open_file_with_retry(file, mode='rb')
-            with stream:
-                # chunk generator
-                async def file_chunks():
-                    while True:
-                        chunk = stream.read(1024 * 1024)  # 1 MB chunk size
-                        if not chunk:
-                            break
-                        yield chunk
+        path = remote_path + '/' + os.path.basename(file)
+        url = (f'{config.lakefs_url}/api/v1/repositories/{urllib.parse.quote_plus(repo)}/branches/'
+               f'{urllib.parse.quote_plus(stable_branch_name)}'
+               f'/objects?path={urllib.parse.quote_plus(path)}')
+        size = os.path.getsize(file) if os.path.exists(file) else None
+        logger.info(f"Uploading {file} ({size} bytes) -> {url}")
 
-                path = remote_path + '/' + os.path.basename(file)
+        # Unlike the download path, this API takes one object per POST, so a
+        # failure restarts that file -- there is no offset to resume from.
+        # Retries are therefore few and only for transport-level errors.
+        for attempt in range(1, UPLOAD_MAX_ATTEMPTS + 1):
+            try:
+                async with aiohttp.ClientSession(cookies=login_cookie, timeout=timeout) as session:
+                    stream = await open_file_with_retry(file, mode='rb')
+                    with stream:
+                        sent = 0
+                        last_hb = asyncio.get_event_loop().time()
 
-                url = (f'{config.lakefs_url}/api/v1/repositories/{urllib.parse.quote_plus(repo)}/branches/'
-                       f'{urllib.parse.quote_plus(stable_branch_name)}'
-                       f'/objects?path={urllib.parse.quote_plus(path)}')
-                logger.info(url)
+                        async def file_chunks():
+                            nonlocal sent, last_hb
+                            while True:
+                                # Read off the event loop: a blocking read here
+                                # stalls heartbeats and every other activity
+                                # sharing this worker.
+                                chunk = await asyncio.to_thread(stream.read, 8 * 1024 * 1024)
+                                if not chunk:
+                                    break
+                                sent += len(chunk)
+                                now = asyncio.get_event_loop().time()
+                                if now - last_hb >= _HEARTBEAT_INTERVAL_SECS:
+                                    _activity_heartbeat({"file": path, "sent": sent, "size": size})
+                                    last_hb = now
+                                yield chunk
 
-                async with session.post(url, data=file_chunks()) as response:
-                    if response.status not in [200, 201]:
-                        txt = await response.text()
-                        logger.error(f"Error uploading file: {txt}")
-                        raise Exception(f"Error uploading file: {response.status}")
-                    logger.info(f"Uploaded {path}")
+                        async with session.post(url, data=file_chunks()) as response:
+                            if response.status not in [200, 201]:
+                                txt = await response.text()
+                                logger.error(f"Error uploading file: {txt}")
+                                raise Exception(f"Error uploading file: {response.status}")
+                            logger.info(f"Uploaded {path} ({sent} bytes)")
+                break
+            except (asyncio.TimeoutError, aiohttp.ClientError, OSError) as e:
+                if attempt >= UPLOAD_MAX_ATTEMPTS:
+                    logger.error(f"upload {path}: giving up after {attempt} attempts: {e}")
+                    raise
+                delay = 5 * (2 ** (attempt - 1))
+                logger.warning(
+                    f"upload {path}: attempt {attempt} failed ({type(e).__name__}: {e}); "
+                    f"restarting the file in {delay}s"
+                )
+                _activity_heartbeat({"file": path, "attempt": attempt, "retry": True})
+                await asyncio.sleep(delay)
     if len(local_files):
         # Commit
         try:
@@ -697,3 +755,112 @@ if __name__ == '__main__':
     asyncio.run(
         download_files("biobricks-mesh-kg", "v0.0.1")
     )
+
+# ── okn-void sync helpers ────────────────────────────────────────────────────
+# Small REST wrappers (same cookie-auth style as get_latest_commit) used to
+# drive the okn-void release cycle from the weekly federated build: merge the
+# accumulated stable_v* branch to main, then tag it once federation rolls over.
+
+async def list_branches(repo: str) -> List[str]:
+    """All branch names in `repo` (follows pagination)."""
+    cookie = await login_and_get_cookies(config.lakefs_url, config.lakefs_access_key, config.lakefs_secret_key)
+    branches, after = [], ''
+    async with aiohttp.ClientSession(cookies=cookie) as session:
+        while True:
+            url = (f'{config.lakefs_url}/api/v1/repositories/{urllib.parse.quote_plus(repo)}'
+                   f'/branches?amount=1000&after={urllib.parse.quote_plus(after)}')
+            response = await session.get(url)
+            if response.status != 200:
+                raise Exception(f"Failed to list branches for {repo}: HTTP {response.status}")
+            data = await response.json()
+            branches += [b['id'] for b in data.get('results') or []]
+            pagination = data.get('pagination') or {}
+            if not pagination.get('has_more'):
+                return branches
+            after = pagination.get('next_offset') or ''
+
+
+async def list_tags(repo: str) -> List[str]:
+    """All tag names in `repo` (follows pagination)."""
+    cookie = await login_and_get_cookies(config.lakefs_url, config.lakefs_access_key, config.lakefs_secret_key)
+    tags, after = [], ''
+    async with aiohttp.ClientSession(cookies=cookie) as session:
+        while True:
+            url = (f'{config.lakefs_url}/api/v1/repositories/{urllib.parse.quote_plus(repo)}'
+                   f'/tags?amount=1000&after={urllib.parse.quote_plus(after)}')
+            response = await session.get(url)
+            if response.status != 200:
+                raise Exception(f"Failed to list tags for {repo}: HTTP {response.status}")
+            data = await response.json()
+            tags += [t['id'] for t in data.get('results') or []]
+            pagination = data.get('pagination') or {}
+            if not pagination.get('has_more'):
+                return tags
+            after = pagination.get('next_offset') or ''
+
+
+async def refs_differ(repo: str, left: str, right: str) -> bool:
+    """True iff `right` has at least one object change relative to `left`."""
+    cookie = await login_and_get_cookies(config.lakefs_url, config.lakefs_access_key, config.lakefs_secret_key)
+    async with aiohttp.ClientSession(cookies=cookie) as session:
+        url = (f'{config.lakefs_url}/api/v1/repositories/{urllib.parse.quote_plus(repo)}/refs/'
+               f'{urllib.parse.quote_plus(left)}/diff/{urllib.parse.quote_plus(right)}?amount=1')
+        response = await session.get(url)
+        if response.status != 200:
+            raise Exception(f"Failed to diff {repo} {left}..{right}: HTTP {response.status}")
+        data = await response.json()
+        return bool(data.get('results'))
+
+
+async def merge_branch(repo: str, source: str, destination: str, message: str = None) -> Optional[str]:
+    """Merge `source` into `destination`. Returns the merge commit id, or None
+    when there was nothing to merge. Any other failure raises."""
+    cookie = await login_and_get_cookies(config.lakefs_url, config.lakefs_access_key, config.lakefs_secret_key)
+    async with aiohttp.ClientSession(cookies=cookie) as session:
+        url = (f'{config.lakefs_url}/api/v1/repositories/{urllib.parse.quote_plus(repo)}/refs/'
+               f'{urllib.parse.quote_plus(source)}/merge/{urllib.parse.quote_plus(destination)}')
+        body = {"message": message or f"Merge '{source}' into '{destination}'"}
+        response = await session.post(url, json=body)
+        text = await response.text()
+        if response.status in (200, 201):
+            try:
+                return (json.loads(text) or {}).get('reference')
+            except ValueError:
+                return ''
+        # lakeFS answers a no-op merge with 400 "no changes"; that is success
+        # for our purposes (the branch is already in destination).
+        if response.status == 400 and 'no changes' in text.lower():
+            return None
+        raise Exception(f"Failed to merge {source} into {destination} on {repo}: HTTP {response.status} {text}")
+
+
+async def create_tag(repo: str, tag: str, ref: str) -> bool:
+    """Create `tag` at `ref`. Returns False if the tag already exists."""
+    cookie = await login_and_get_cookies(config.lakefs_url, config.lakefs_access_key, config.lakefs_secret_key)
+    async with aiohttp.ClientSession(cookies=cookie) as session:
+        url = f'{config.lakefs_url}/api/v1/repositories/{urllib.parse.quote_plus(repo)}/tags'
+        response = await session.post(url, json={"id": tag, "ref": ref})
+        if response.status in (200, 201):
+            return True
+        if response.status == 409:
+            return False
+        raise Exception(f"Failed to tag {repo}@{ref} as {tag}: HTTP {response.status} {await response.text()}")
+
+
+async def read_object_text(repo: str, ref: str, remote_file_path: str) -> Optional[str]:
+    """Fetch a small text object into memory. None when absent.
+
+    ponytail: no size guard -- the only caller reads void/void.nt (tens of KB).
+    Add one if this ever points at a graph file.
+    """
+    cookie = await login_and_get_cookies(config.lakefs_url, config.lakefs_access_key, config.lakefs_secret_key)
+    timeout = aiohttp.ClientTimeout(total=120, sock_connect=30)
+    async with aiohttp.ClientSession(cookies=cookie, timeout=timeout) as session:
+        url = (f'{config.lakefs_url}/api/v1/repositories/{urllib.parse.quote_plus(repo)}/refs/'
+               f'{urllib.parse.quote_plus(ref)}/objects?path={urllib.parse.quote_plus(remote_file_path)}')
+        response = await session.get(url)
+        if response.status == 404:
+            return None
+        if response.status != 200:
+            raise Exception(f"Failed to read {repo}@{ref}:{remote_file_path}: HTTP {response.status}")
+        return await response.text()

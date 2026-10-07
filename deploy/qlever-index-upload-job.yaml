@@ -1,0 +1,100 @@
+# One-off: ship an already-built federated index from the build cluster to the
+# transfer bucket, so the serving cluster can pull it.
+#
+# Normally KACE does this itself in phase 6.5 of QLeverIndexWorkflow
+# (submit_qlever_index_upload). This manifest exists for indexes built BEFORE a
+# bucket was configured: that phase returned "" and skipped, and re-running the
+# workflow will not help -- change detection short-circuits on unchanged commits
+# long before the upload phase.
+#
+# Apply with the build id and bucket filled in:
+#
+#   BUILD_ID=20260826-002704
+#   BUCKET=frink-qlever-index-transfer
+#   sed -e "s|\${BUILD_ID}|$BUILD_ID|g" -e "s|\${BUCKET}|$BUCKET|g" \\
+#       deploy/qlever-index-upload-job.yaml | kubectl -n frink apply -f -
+#   kubectl -n frink logs -f job/qlever-index-upload-$BUILD_ID
+#
+# (envsubst also works if you have gettext-base; sed avoids the dependency.)
+#
+# The index PVC is RWO, so the completed indexer pod must be gone first:
+#   kubectl -n frink delete job qlever-index-$BUILD_ID
+#
+# The layout below is what submit_qlever_index_download expects, so do not
+# change it casually:
+#   objects at  s3://$BUCKET/$BUILD_ID/...
+#   marker at   s3://$BUCKET/$BUILD_ID.complete
+# The downloader refuses to serve a build whose marker is missing, which is how
+# a half-finished upload is prevented from becoming the live index.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: qlever-index-upload-${BUILD_ID}
+  labels:
+    app.kubernetes.io/managed-by: kace-manual
+    kace.frink/build-id: "${BUILD_ID}"
+spec:
+  # No retry: a failed upload leaves a partial prefix, and re-running by hand
+  # after looking at the logs beats a blind restart of a ~600GiB transfer.
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels:
+        kace.frink/build-id: "${BUILD_ID}"
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: upload
+          image: peakcom/s5cmd:v2.2.2
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e
+              echo "uploading /index -> s3://$BUCKET/$BUILD_ID/"
+              du -sh /index || true
+
+              # --numworkers: parallel object transfers. The index is a few
+              # hundred large files, so a high count buys nothing and just
+              # multiplies the number of long-lived WAN connections that can be
+              # cut mid-flight. s5cmd retries each object itself.
+              /s5cmd --endpoint-url "$BUCKET_ENDPOINT" --numworkers 16 --stat \
+                cp "/index/*" "s3://$BUCKET/$BUILD_ID/"
+
+              # Marker last, and only on success: the serving side treats its
+              # presence as "this prefix is complete and safe to serve".
+              echo "$BUILD_ID" > /tmp/done
+              /s5cmd --endpoint-url "$BUCKET_ENDPOINT" \
+                cp /tmp/done "s3://$BUCKET/$BUILD_ID.complete"
+
+              echo "uploaded:"
+              /s5cmd --endpoint-url "$BUCKET_ENDPOINT" ls "s3://$BUCKET/$BUILD_ID/" | tail -5
+          env:
+            - name: BUILD_ID
+              value: "${BUILD_ID}"
+            - name: BUCKET
+              value: "${BUCKET}"
+            - name: BUCKET_ENDPOINT
+              value: "https://storage.googleapis.com"
+            # Same secret the worker reads for the automatic path, so the
+            # one-off and the workflow authenticate identically.
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef: {name: kace-index-bucket, key: access_key}
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef: {name: kace-index-bucket, key: secret_key}
+          resources:
+            requests: {cpu: "2", memory: 2Gi}
+            limits:   {cpu: "2", memory: 2Gi}
+          volumeMounts:
+            - name: index
+              mountPath: /index
+              readOnly: true
+      volumes:
+        - name: index
+          persistentVolumeClaim:
+            # RWO: nothing else may mount this while the job runs. The indexer
+            # that wrote it has already finished, so the volume is free.
+            claimName: kace-qlever-index-${BUILD_ID}
+            readOnly: true

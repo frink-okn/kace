@@ -1,0 +1,116 @@
+# Identity KACE uses to manage the serving layer on GKE from another cluster.
+#
+# Apply this in the GKE namespace that holds the SPARQL endpoints, then mint a
+# kubeconfig from it (steps at the bottom) and hand that kubeconfig to KACE as
+# the `kace-remote-kubeconfig` Secret on the build cluster.
+#
+#   kubectl apply -n <gke-namespace> -f deploy/gke-remote-rbac.yaml
+#
+# Why a ServiceAccount token and not `gcloud container clusters get-credentials`:
+# that command writes a kubeconfig whose user runs `gke-gcloud-auth-plugin`, a
+# binary the kace image does not have. A ServiceAccount token needs no plugin,
+# no GCP SDK, and does not expire.
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kace-remote
+---
+# k8s >= 1.24 stopped auto-creating token Secrets for ServiceAccounts, so this
+# one is declared explicitly. Tokens of this kind do not expire; GKE's
+# LegacyServiceAccountTokenCleanUp only reaps ones that go unused for ~a year,
+# which continuous use prevents.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: kace-remote-token
+  annotations:
+    kubernetes.io/service-account.name: kace-remote
+type: kubernetes.io/service-account-token
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: kace-remote
+rules:
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["configmaps", "pods", "secrets", "services", "persistentvolumeclaims"]
+    verbs: ["create", "delete", "deletecollection", "get", "list", "patch", "update", "watch"]
+  # Job failures are diagnosed by reading the pod logs; without this subresource
+  # a remote failure reports "<unavailable>" exactly when you need the reason.
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get", "list"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "deployments/scale", "replicasets", "replicasets/scale"]
+    verbs: ["create", "delete", "deletecollection", "get", "list", "patch", "update", "watch"]
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["create", "delete", "deletecollection", "get", "list", "patch", "update", "watch"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["ingresses"]
+    verbs: ["create", "delete", "deletecollection", "get", "list", "patch", "update", "watch"]
+  - apiGroups: ["gateway.networking.k8s.io"]
+    resources: ["httproutes"]
+    verbs: ["create", "delete", "deletecollection", "get", "list", "patch", "update", "watch"]
+  - apiGroups: ["networking.gke.io"]
+    resources: ["healthcheckpolicies", "gcpbackendpolicies"]
+    verbs: ["create", "delete", "deletecollection", "get", "list", "patch", "update", "watch"]
+  # KEDA owns the replica count of every per-KG QLever Deployment (min 0), so
+  # provisioning a KG means creating its HTTPScaledObject on the serving cluster.
+  # KEDA and its interceptor are installed there, not on the build cluster.
+  - apiGroups: ["http.keda.sh"]
+    resources: ["httpscaledobjects"]
+    verbs: ["create", "delete", "deletecollection", "get", "list", "patch", "update", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: kace-remote
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: kace-remote
+subjects:
+  - kind: ServiceAccount
+    name: kace-remote
+---
+# Minting the kubeconfig (run against the GKE cluster, with NS set):
+#
+#   NS=frink
+#   SERVER=$(kubectl config view --minify -o jsonpath='{.clusters[0].cluster.server}')
+#   CA=$(kubectl -n $NS get secret kace-remote-token -o jsonpath='{.data.ca\.crt}')
+#   TOKEN=$(kubectl -n $NS get secret kace-remote-token -o jsonpath='{.data.token}' | base64 -d)
+#
+#cat > gke.kubeconfig <<EOF
+#apiVersion: v1
+#kind: Config
+#clusters:
+#- name: gke
+#  cluster: {server: $SERVER, certificate-authority-data: $CA}
+#contexts:
+#- name: gke
+#  context: {cluster: gke, user: kace-remote, namespace: $NS}
+#current-context: gke
+#users:
+#- name: kace-remote
+#  user: {token: $TOKEN}
+#EOF
+
+#
+# Then, on the build cluster:
+#
+#   kubectl create secret generic kace-remote-kubeconfig --from-file=config=./gke.kubeconfig
+#
+# and in values: remoteCluster.secretName=kace-remote-kubeconfig,
+# app_config.remote_kubeconfig=/etc/kace/remote/config, app_config.remote_namespace=$NS
+#
+# Verify before cutover:
+#   kubectl --kubeconfig gke.kubeconfig -n $NS get deploy,svc,pvc
+#
+# Note the GKE cluster's control plane must accept connections from the build
+# cluster's egress IP (authorized networks), and the CA above must be the
+# cluster CA, not a system root.

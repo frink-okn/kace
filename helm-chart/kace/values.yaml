@@ -214,6 +214,11 @@ app_config:
   temporal_namespace: "default"
   # Networking mode: "gateway" (HTTPRoute + HealthCheckPolicy) or "ingress" (Kubernetes Ingress)
 #  networking_mode: "gateway"
+  # Point SPARQL HTTPRoutes at the frink-throttle nginx proxy (chart lives in the
+  # helm-charts repo; deploy it first). Gateway mode only.
+  throttle_enabled: "false"
+  throttle_service: "frink-throttle"
+  throttle_port: "8080"
   # Comma-separated lakefs repo names that bypass KG registry lookup (synthetic KG used).
   conversion_skip_repos: "wikidata"
   # LDF aggregator (single multi-KG LDF deployment)

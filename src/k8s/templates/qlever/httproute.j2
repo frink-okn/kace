@@ -13,6 +13,15 @@ spec:
     - path:
         type: PathPrefix
         value: "/{{ kg_name }}"
+{% if throttle_enabled %}
+    # frink-throttle (nginx, helm-charts repo) sits in front: it enforces the
+    # per-client limits, then forwards to the KEDA interceptor with the same
+    # Host rewrite the non-throttled branch below does. No URLRewrite here --
+    # nginx does it, so the original path must reach it untouched.
+    backendRefs:
+    - name: {{ throttle_service }}
+      port: {{ throttle_port }}
+{% else %}
     # The backend is the KEDA interceptor, not this KG's Service: the KG sits at
     # zero replicas until a request arrives, and the interceptor is what holds
     # that request while the Deployment scales 0->1 and QLever loads its index.
@@ -38,3 +47,4 @@ spec:
         path:
           type: ReplacePrefixMatch
           replacePrefixMatch: "/"
+{% endif %}

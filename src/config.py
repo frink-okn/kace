@@ -36,6 +36,10 @@ class Config(BaseModel):
     temporal_host: str
     temporal_namespace: str
     networking_mode: str
+    # Route SPARQL traffic through the frink-throttle nginx proxy (helm-charts repo).
+    throttle_enabled: bool
+    throttle_service: str
+    throttle_port: int
     void_repo: str
     qlever_storage_class: str
     qlever_use_private_pvc: bool
@@ -141,6 +145,9 @@ config = Config(
     temporal_host=os.environ.get('TEMPORAL_HOST', 'localhost:7233'),
     temporal_namespace=os.environ.get('TEMPORAL_NAMESPACE', 'default'),
     networking_mode=os.environ.get('NETWORKING_MODE', 'ingress'),
+    throttle_enabled=os.environ.get('THROTTLE_ENABLED', 'false').lower() == 'true',
+    throttle_service=os.environ.get('THROTTLE_SERVICE', 'frink-throttle'),
+    throttle_port=int(os.environ.get('THROTTLE_PORT', '8080')),
     void_repo=os.environ.get('VOID_REPO', 'okn-void:develop'),
     qlever_storage_class=os.environ.get('QLEVER_STORAGE_CLASS', ''),
     qlever_use_private_pvc=os.environ.get('QLEVER_USE_PRIVATE_PVC', 'true').lower() == 'true',

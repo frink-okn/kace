@@ -51,6 +51,11 @@ assert FrinkOptions(**{
 kg = KG(description="d", shortname="s")
 assert kg.frink_options is None
 
+# 3b. `funding` is a single URL for some KGs and a list for others; the list form
+#     arrived in the registry later and failed KGConfig the same way as above.
+assert KG(description="d", funding="http://f/1").funding == "http://f/1"
+assert KG(description="d", funding=["http://f/1", "http://f/2"]).funding == ["http://f/1", "http://f/2"]
+
 # 4. Every slack_canary.<attr> the app calls must exist on SlackCanary. A typo
 #    here only shows up on the error path, i.e. exactly when something else is
 #    already going wrong.

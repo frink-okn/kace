@@ -1,6 +1,8 @@
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+import urllib.parse
+
 from config import config
 from log_util import LoggingUtil
 
@@ -21,7 +23,7 @@ class MailCanary:
         self.sender_email = sender_email
         self.sender_password = sender_password
 
-    def deployed_email_template(self, kg_name, version, access_url):
+    def deployed_email_template(self, kg_name, version, access_url, endpoint_url=None):
         return f"""
         <!DOCTYPE html>
         <html>
@@ -39,7 +41,10 @@ class MailCanary:
                 <div class="details">
                     <p><strong>Service Name:</strong> {kg_name}</p>
                     <p><strong>Version:</strong> {version}</p>
-                    <p><strong>Access URL:</strong> <a href="https://{access_url}" target="_blank">FRINK Query Page</a></p>
+                    <p><strong>Query page:</strong> <a href="{access_url}" target="_blank">FRINK Query Page</a></p>
+                    {f'<p><strong>SPARQL endpoint:</strong> <code>{endpoint_url}</code><br>'
+                       f'<span style="font-size:90%">Use this from a SPARQL client. Opening it in a browser with no '
+                       f'query returns 404 -- that is QLever answering, not an outage.</span></p>' if endpoint_url else ''}
                 </div>
                 <div class="content">
                     If you have any questions or need assistance, please contact us at 
@@ -142,7 +147,9 @@ class MailCanary:
                 if self.sender_password:
                     server.login(self.sender_email, self.sender_password)
 
-                if not config.stop_email:
+                if config.stop_email:
+                    logger.info(f"STOP_EMAIL set; not sending '{subject}' to {recipient_email}")
+                else:
                     server.send_message(message)
 
             logger.info(f"Email sent to {recipient_email}")
@@ -186,12 +193,30 @@ class MailCanary:
     def send_deployed_email(self,
                             recipient_email: str,
                             version: str,
-                            kg_name: str):
-        access_url = config.frink_address + f"?query=PREFIX+rdf:+%3Chttp://www.w3.org/1999/02/22-rdf-syntax-ns%23%3E%0APREFIX+rdfs:+%3Chttp://www.w3.org/2000/01/rdf-schema%23%3E%0ASELECT+*+WHERE+{{%0A++?sub+?pred+?obj+.%0A}}+LIMIT+10&sources={kg_name}"
+                            kg_name: str,
+                            kg_slug: str = ""):
+        """`kg_name` is the human title for the subject and body; `kg_slug` is
+        the registry shortname, which is what the query page's `sources` filter
+        and the endpoint path are keyed on. They are NOT interchangeable: the
+        title contains spaces and parentheses and produced a malformed URL."""
+        base = config.frink_address.rstrip('/')
+        if not base.startswith(('http://', 'https://')):
+            base = 'https://' + base
+        query = ("PREFIX+rdf:+%3Chttp://www.w3.org/1999/02/22-rdf-syntax-ns%23%3E%0A"
+                 "PREFIX+rdfs:+%3Chttp://www.w3.org/2000/01/rdf-schema%23%3E%0A"
+                 "SELECT+*+WHERE+{%0A++?sub+?pred+?obj+.%0A}+LIMIT+10")
+        slug = urllib.parse.quote(kg_slug or "", safe="")
+        access_url = f"{base}/?query={query}" + (f"&sources={slug}" if slug else "")
+        # /{slug}/sparql is the canonical form. The HTTPRoute rewrites the KG
+        # prefix away, so /{slug}, /{slug}/ and /{slug}/sparql all reach the
+        # server -- but /sparql is what clients expect, and every one of them
+        # needs a ?query=: a bare GET is a 404 from QLever itself.
+        endpoint_url = f"{base}/{slug}/sparql" if slug else None
         email_body = self.deployed_email_template(
             kg_name=kg_name,
             version=version,
-            access_url=access_url
+            access_url=access_url,
+            endpoint_url=endpoint_url,
         )
         self.send_email(recipient_email, f"{kg_name} {version} Deployed", email_body)
 

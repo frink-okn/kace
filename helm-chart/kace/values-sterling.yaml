@@ -1,0 +1,67 @@
+# KACE on sterling (bare metal): webhook + Temporal worker + all batch Jobs here,
+# SPARQL serving managed remotely on GKE.
+#
+#   helm upgrade --install kace ./helm-chart/kace -f helm-chart/kace/values-sterling.yaml
+#
+# Prerequisites (see deploy/gke-remote-rbac.yaml and README):
+#   * Secret kace-remote-kubeconfig  — static kubeconfig for the GKE namespace
+#   * Secret kace-webhook-token      — shared secret lakeFS sends as X-KACE-Token
+#   * Secret kace-index-bucket       — HMAC keys for the index transfer bucket
+#
+# The chart's own defaults still name the deleted Celery entrypoints, so the two
+# overrides below are not optional.
+workerMode: "temporal"
+command:
+  entry: "temporal_server:app"
+
+remoteCluster:
+  secretName: "kace-remote-kubeconfig"
+
+indexBucket:
+  secretName: "kace-index-bucket"
+
+webhookToken:
+  secretName: "kace-webhook-token"
+  secretKey: "token"
+
+ingress:
+  enabled: true
+  className: "nginx"
+  annotations:
+    # Second layer in front of the shared-secret check. lakeFS lives in GKE, so
+    # this is GKE's egress address, not a private range.
+    nginx.ingress.kubernetes.io/whitelist-source-range: "CHANGE-ME/32"
+  hosts:
+    - host: kace.sterling.example          # CHANGE-ME
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+app_config:
+  remote_kubeconfig: "/etc/kace/remote/config"
+  remote_namespace: "CHANGE-ME"            # the GKE namespace holding the endpoints
+  remote_kube_context: ""                  # empty = kubeconfig's current-context
+
+  # Storage: sterling holds the working PVC and the index build volume; the
+  # serving classes below name GKE storage and are used only over the remote client.
+  local_pvc_create: true
+  local_pvc_name: "kace-local-pvc"
+  local_pvc_storage_class: "CHANGE-ME"     # must support ReadWriteMany
+  local_data_dir: "/local/"
+  # Federated index sources persist here between builds. Keep this volume: it is
+  # what stops every weekly build from re-pulling every KG out of GKE (egress).
+  shared_pvc_name: "kace-shared-pvc"
+  shared_data_dir: "/shared/"
+  qlever_source_path: "/shared/qlever-source"
+
+  qlever_index_pvc_storage_class: "CHANGE-ME"        # sterling: the indexer's output volume
+  qlever_index_serving_storage_class: "premium-rwo"  # GKE: what the federation server mounts
+
+  # Index transfer bucket (set a lifecycle rule to expire old builds).
+  qlever_index_bucket: "CHANGE-ME"
+  qlever_index_bucket_endpoint: "https://storage.googleapis.com"
+
+  # Pod introspection to guess this image does not survive the cluster split
+  # cleanly — name it outright.
+  ldf_sync_image: "containers.renci.org/frink/kace:latest"

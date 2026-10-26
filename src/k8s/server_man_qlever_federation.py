@@ -59,7 +59,7 @@ class QLeverFederationServerDeploymentManager(QLeverServerDeploymentManager):
         can flap. This is a thin extra guard: poll the Deployment until the
         controller has observed the new generation."""
         import time
-        api = client.AppsV1Api()
+        api = self._apps()
         deadline = time.time() + timeout_s
         target_generation = None
         while time.time() < deadline:

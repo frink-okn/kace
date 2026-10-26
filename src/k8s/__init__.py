@@ -4,6 +4,7 @@ from k8s.server_man_ldf import LDFServerDeploymentMananger
 from k8s.server_man_qlever import QLeverServerDeploymentManager
 from k8s.server_man_qlever_federation import QLeverFederationServerDeploymentManager
 from config import config as app_config
+from k8s import clients
 from k8s.podman import JobMan
 
 FUSEKI_TEMPLATE_DIR = (
@@ -29,27 +30,27 @@ QLEVER_FEDERATION_TEMPLATE_DIR = (
 
 fuseki_server_manager = ServerDeploymentManager(
     templates_dir=FUSEKI_TEMPLATE_DIR,
-    namespace=app_config.k8s_namespace
+    namespace=clients.namespace(clients.REMOTE)
 )
 
 federation_server_manager = ServerDeploymentManager(
     templates_dir=FEDERATION_TEMPLATE_DIR,
-    namespace=app_config.k8s_namespace
+    namespace=clients.namespace(clients.REMOTE)
 )
 
 ldf_server_manager = LDFServerDeploymentMananger(
     templates_dir=LDF_TEMPLATE_DIR,
-    namespace=app_config.k8s_namespace
+    namespace=clients.namespace(clients.REMOTE)
 )
 
 qlever_server_manager = QLeverServerDeploymentManager(
     templates_dir=QLEVER_TEMPLATE_DIR,
-    namespace=app_config.k8s_namespace,
+    namespace=clients.namespace(clients.REMOTE),
     use_private_pvc=app_config.qlever_use_private_pvc
 )
 
 qlever_federation_server_manager = QLeverFederationServerDeploymentManager(
     templates_dir=QLEVER_FEDERATION_TEMPLATE_DIR,
-    namespace=app_config.k8s_namespace,
+    namespace=clients.namespace(clients.REMOTE),
 )
 

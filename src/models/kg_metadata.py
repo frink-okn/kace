@@ -53,7 +53,8 @@ class KG(BaseModel):
     contacts: Optional[List[Contact]] = None
     # @deprecated field contact
     contact: Optional[Contact] = None
-    funding: Optional[str] = None
+    # Registry entries carry either one URL or a list of them.
+    funding: Optional[Union[str, List[str]]] = None
     homepage: Optional[str] = None
     shortname: Optional[str] = None
     sparql: Optional[str] = None

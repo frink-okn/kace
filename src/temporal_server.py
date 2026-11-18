@@ -6,7 +6,8 @@ import hashlib as _hashlib
 import secrets as _secrets
 
 import uvicorn
-from fastapi import FastAPI, Query, Body, Depends, Header, HTTPException # Added Body
+from fastapi import FastAPI, Query, Body, Depends, Header, HTTPException, Request # Added Body
+from fastapi.responses import JSONResponse
 from models.lakefs_models import LakefsMergeActionModel, LakefTagCreationModel # Added LakefTagCreationModel
 from models.kg_metadata import KGConfig, KG # Added KG
 import memory_sizing
@@ -81,6 +82,48 @@ logger = logging.getLogger(__name__)
 # Helpers
 # ---------------------------------------------------------------------------
 
+def _slack_quietly(text: str) -> None:
+    """Slack is the alert, not the outcome: a Slack outage must not change the
+    HTTP response the caller gets."""
+    try:
+        slack_canary.send_message(text)
+    except Exception as e:
+        logger.error(f"Slack alert failed ({e}); undelivered: {text}")
+
+
+@app.exception_handler(Exception)
+async def _alert_unhandled(request: Request, exc: Exception):
+    """Any unhandled error on any endpoint reaches Slack, not just the pod log.
+
+    lakeFS only shows the 500 in its own action run log, which nobody watches,
+    so without this a failed webhook is silent until a KG owner emails asking
+    where their conversion is. HTTPExceptions (401/404) have their own handler
+    and do not land here. Starlette still logs the traceback after this returns.
+    """
+    _slack_quietly(
+        f"🔥 KACE webhook `{request.method} {request.url.path}` failed; its workflow "
+        f"probably did not start: `{type(exc).__name__}: {exc}`"
+    )
+    return JSONResponse(status_code=500, content={"detail": "internal error; details in KACE logs/Slack"})
+
+
+async def registry_entry(repo_id: str) -> KG:
+    """The okn-registry record for a lakeFS repo, or 404 (with a Slack alert).
+
+    A merge can land before the repo's registry entry does. That used to 500
+    with an opaque AttributeError and start nothing -- the fda-* repos sat
+    unconverted for days in Nov 2026 because of it. Registry fetch errors are
+    left to _alert_unhandled.
+    """
+    kg = (await KGConfig.from_git()).get_by_repo(repo_id=repo_id)
+    if kg is None:
+        msg = (f"⚠️ `{repo_id}` has no okn-registry entry with `lakefs-repo: {repo_id}`, "
+               f"so nothing was started. Add it to kgs.yaml, then re-fire the webhook.")
+        _slack_quietly(msg)
+        raise HTTPException(status_code=404, detail=msg)
+    return kg
+
+
 async def cancel_existing_workflow(client, workflow_id: str) -> bool:
     """
     Attempt to cancel a running workflow by its ID.
@@ -137,14 +180,7 @@ async def convert_to_hdt(
     repo_id = action_model.repository_id
     workflow_id = f"hdt-{repo_id}"
 
-    # Read KG config
-    try:
-        kg_config = (await KGConfig.from_git()).get_by_repo(repo_id=repo_id)
-    except Exception as e:
-        slack_canary.send_message(
-            f"⚠️ Failed to read registry config from {config.kg_config_url}, {str(e)}"
-        )
-        raise e
+    kg_config = await registry_entry(repo_id)
 
     # Pod memory is the only memory input an action gives. Everything the jobs
     # need is derived from it and passed into the workflow, so the Temporal UI
@@ -304,17 +340,9 @@ async def handle_tag_creation(
     parsed_qlever_args = shlex.split(qlever_args) if qlever_args else None
     # Resolve kg_config and kg_name
 
-    try:
-        kg_config_obj = (await KGConfig.from_git()).get_by_repo(repo_id=repo_id)
-        if not kg_config_obj:
-            raise Exception(f"No KG configuration found for repository: {repo_id}")
-        kg_name = kg_config_obj.shortname
-        kg_config_dict = kg_config_obj.dict()
-    except Exception as e:
-        slack_canary.send_message(
-            f"⚠️ Failed to read registry config from {config.kg_config_url}, {str(e)}"
-        )
-        raise e
+    kg_config_obj = await registry_entry(repo_id)
+    kg_name = kg_config_obj.shortname
+    kg_config_dict = kg_config_obj.dict()
 
     slack_canary.notify_event(
         event_name="Tag is created, proceeding to QLever deployment (Temporal)",

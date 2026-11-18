@@ -1,6 +1,7 @@
 import asyncio
 from temporalio.worker import Worker
 from .client import get_client
+from .interceptors import SlackFailureInterceptor
 from .schedules import ensure_qlever_index_schedule
 from log_util import LoggingUtil
 
@@ -138,6 +139,7 @@ async def main():
             wait_void_artifacts,
             tag_void_build,
         ],
+        interceptors=[SlackFailureInterceptor()],
     )
     
     logger.info(f"Starting Temporal Worker on queue: {task_queue}")

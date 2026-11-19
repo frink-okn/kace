@@ -13,6 +13,12 @@ spec:
     - path:
         type: PathPrefix
         value: "/{{ federation_prefix }}"
+{% if throttle_enabled %}
+    # nginx throttle proxy rewrites /federation -> / itself (see qlever/httproute.j2).
+    backendRefs:
+    - name: {{ throttle_service }}
+      port: {{ throttle_port }}
+{% else %}
     backendRefs:
     - name: frink-federation-qlever-server
       port: 7001
@@ -22,3 +28,4 @@ spec:
         path:
           type: ReplacePrefixMatch
           replacePrefixMatch: "/"
+{% endif %}

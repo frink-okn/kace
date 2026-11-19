@@ -7,6 +7,21 @@ spec:
     timeoutSec: {{ backend_timeout_sec | default(3600) }}
     connectionDraining:
       drainingTimeoutSec: {{ backend_draining_sec | default(60) }}
+    # A GCPBackendPolicy with no logging block turns LB request logging OFF for
+    # the backend it targets -- which is why /federation logged nothing while
+    # policy-less backends (KGF, LDF, frink-ui) did. Declared here so the setting
+    # survives in code, not just as a hand-patch on the live object.
+    #
+    # sampleRate is explicit: the CRD says it defaults to "all requests", but
+    # GKE's docs say the opposite for the BackendConfig/Ingress spelling, and
+    # 1e6 (= 100%) costs nothing and removes the question.
+    #
+    # Deleting these lines does NOT disable logging on an existing policy:
+    # create_or_update_backend_policy sends application/merge-patch+json, which
+    # only adds and overwrites. To turn it off, patch `logging` to null.
+    logging:
+      enabled: {{ backend_logging | default(true) | tojson }}
+      sampleRate: {{ backend_logging_sample_rate | default(1000000) }}
   targetRef:
     group: ""
     kind: Service

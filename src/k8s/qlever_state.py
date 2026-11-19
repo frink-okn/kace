@@ -8,37 +8,10 @@ that produced the serving build) so that QLeverIndexWorkflow can:
 """
 import json
 from typing import Dict, Optional
-from kubernetes import client, config as k8s_config
+from kubernetes import client
 from kubernetes.client.rest import ApiException
 from config import config as app_config
-
-
-def _reload_k8s_auth():
-    # legacy no-op; kept for source-compat
-    pass
-
-
-_TOKEN_FILE = "/var/run/secrets/kubernetes.io/serviceaccount/token"
-
-
-def _fresh_api_client():
-    """See podman._fresh_api_client for rationale (token rotation + manual
-    bearer override to work around the kubernetes Python client occasionally
-    not attaching the Authorization header from `Configuration.api_key`)."""
-    cfg = client.Configuration()
-    k8s_config.load_incluster_config(client_configuration=cfg)
-    try:
-        with open(_TOKEN_FILE) as fh:
-            token = fh.read().strip()
-        if token:
-            cfg.api_key = {"authorization": f"bearer {token}"}
-            cfg.api_key_prefix = {}
-            api_client = client.ApiClient(configuration=cfg)
-            api_client.set_default_header("Authorization", f"Bearer {token}")
-            return api_client
-    except Exception:
-        pass
-    return client.ApiClient(configuration=cfg)
+from k8s import clients
 
 
 EMPTY_STATE: Dict = {
@@ -50,13 +23,16 @@ EMPTY_STATE: Dict = {
 }
 
 
+# State belongs with the cluster that produces it: the index build runs locally,
+# so the ConfigMap does too. Consumers on the serving side read it over the API
+# like any other datum -- it never has to be co-located with the index PVC.
 def _api() -> client.CoreV1Api:
-    return client.CoreV1Api(api_client=_fresh_api_client())
+    return clients.core_v1(clients.LOCAL)
 
 
 def read_state() -> Dict:
     name = app_config.qlever_state_configmap
-    namespace = app_config.k8s_namespace
+    namespace = clients.namespace(clients.LOCAL)
     try:
         cm = _api().read_namespaced_config_map(name=name, namespace=namespace)
     except ApiException as e:
@@ -75,7 +51,7 @@ def read_state() -> Dict:
 
 def write_state(state: Dict) -> None:
     name = app_config.qlever_state_configmap
-    namespace = app_config.k8s_namespace
+    namespace = clients.namespace(clients.LOCAL)
     body = {
         "apiVersion": "v1",
         "kind": "ConfigMap",

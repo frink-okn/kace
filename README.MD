@@ -68,6 +68,58 @@ Workflow IDs are deterministic per repo. Before starting a workflow, the webhook
 in-flight workflow with the same ID (`cancel_existing_workflow`) — this enforces
 at-most-one-in-flight per repo.
 
+### Authentication
+
+Every endpoint requires a shared secret in the `X-KACE-Token` header (`require_token` in
+`temporal_server.py`). With `WEBHOOK_TOKEN` unset the server answers 503 to everything —
+these endpoints cancel builds, start multi-day index jobs and repoint the public
+`/federation` endpoint, so they fail closed rather than open.
+
+lakeFS sends it from its action yaml. The value must be exported on the lakeFS server as
+`LAKEFSACTIONS_KACE_TOKEN` — lakeFS refuses to interpolate env vars without that prefix:
+
+```yaml
+hooks:
+  - id: kace_deploy
+    type: webhook
+    properties:
+      url: "https://kace.example/handle_tag_creation"
+      query_params: {memory: "28Gi"}
+      headers: {X-KACE-Token: "{{ ENV.LAKEFSACTIONS_KACE_TOKEN }}"}
+```
+
+Any non-2XX fails the hook, so a rejected token shows up in the lakeFS run log. Manual
+triggers need the header too:
+
+```bash
+curl -X POST -H "X-KACE-Token: $TOKEN" https://kace.example/trigger_qlever_index
+```
+
+## Running across two clusters
+
+KACE can run its batch work (conversions, federated index build) on one cluster while
+managing the SPARQL serving layer (per-KG QLever, LDF, federated QLever) on another. Every
+k8s call carries a `cluster` argument — `local` for anything sharing a PVC with the worker
+process, `remote` for anything users' queries reach — resolved in `src/k8s/clients.py`.
+
+This is off by default: with `REMOTE_KUBECONFIG` unset, `clients.effective()` folds `remote`
+into `local` and behavior is identical to a single-cluster install.
+
+To turn it on:
+
+1. Apply `deploy/gke-remote-rbac.yaml` in the serving namespace and mint a kubeconfig from
+   the ServiceAccount token (instructions are in that file). A `gcloud container clusters
+   get-credentials` kubeconfig will **not** work — it shells out to a plugin the image lacks.
+2. Store it as a Secret on the batch cluster and deploy with
+   `helm-chart/kace/values-sterling.yaml` as a starting point.
+3. Give `QLEVER_INDEX_BUCKET` a bucket: an RWO PVC cannot span clusters, so a finished
+   federated index is uploaded there by the build cluster and pulled down onto the serving
+   PVC before rollover. Set a lifecycle rule so old builds expire.
+
+Two things do not survive the split: the retired Fuseki path (`download_hdt_files_activity`
+stages a PVC from inside the worker) and pod-introspection of the kace image
+(`_ldf_sync_image`) — set `LDF_SYNC_IMAGE` explicitly instead.
+
 ## Repository layout
 
 | Path | Purpose |
